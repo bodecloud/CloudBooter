@@ -5,6 +5,7 @@
 # Usage:
 #   Interactive mode:        ./setup_oci_terraform.sh
 #   Non-interactive mode:    NON_INTERACTIVE=true AUTO_USE_EXISTING=true AUTO_DEPLOY=true ./setup_oci_terraform.sh
+#   Resize legacy ARM only:  RESIZE_LEGACY_ARM_ONLY=true ./setup_oci_terraform.sh
 #   Use existing config:     AUTO_USE_EXISTING=true ./setup_oci_terraform.sh
 #   Auto deploy only:        AUTO_DEPLOY=true ./setup_oci_terraform.sh
 #   Skip to deploy:          SKIP_CONFIG=true ./setup_oci_terraform.sh
@@ -22,8 +23,14 @@ NON_INTERACTIVE=${NON_INTERACTIVE:-false}
 AUTO_USE_EXISTING=${AUTO_USE_EXISTING:-false}
 AUTO_DEPLOY=${AUTO_DEPLOY:-false}
 SKIP_CONFIG=${SKIP_CONFIG:-false}
+ENFORCE_LIMITS=${ENFORCE_LIMITS:-auto}
+AUTO_RESIZE_LEGACY_ARM=${AUTO_RESIZE_LEGACY_ARM:-auto}
+RESIZE_LEGACY_ARM_ONLY=${RESIZE_LEGACY_ARM_ONLY:-false}
+CLOUDBOOTER_REPORT_JSON=${CLOUDBOOTER_REPORT_JSON:-""}
 DEBUG=${DEBUG:-false}
 FORCE_REAUTH=${FORCE_REAUTH:-false}
+OPEN_ALL_PORTS=${OPEN_ALL_PORTS:-false}
+EXTRA_INGRESS_PORTS=${EXTRA_INGRESS_PORTS:-}
 
 # Optional Terraform remote backend (set to 'oci' to use OCI Object Storage S3-compatible backend)
 TF_BACKEND=${TF_BACKEND:-local}                # values: local | oci
@@ -53,16 +60,20 @@ OCI_CLI_MAX_RETRIES=${OCI_CLI_MAX_RETRIES:-3}
 
 
 
-# Oracle Free Tier Limits (as of 2025)
+# Oracle Free Tier Limits (Always Free — updated June 2026)
 readonly FREE_TIER_MAX_AMD_INSTANCES=2
 readonly FREE_TIER_AMD_SHAPE="VM.Standard.E2.1.Micro"
-readonly FREE_TIER_MAX_ARM_OCPUS=4
-readonly FREE_TIER_MAX_ARM_MEMORY_GB=24
+readonly FREE_TIER_MAX_ARM_OCPUS=2
+readonly FREE_TIER_MAX_ARM_MEMORY_GB=12
 readonly FREE_TIER_ARM_SHAPE="VM.Standard.A1.Flex"
 readonly FREE_TIER_MAX_STORAGE_GB=200
 readonly FREE_TIER_MIN_BOOT_VOLUME_GB=47
-readonly FREE_TIER_MAX_ARM_INSTANCES=4
+readonly FREE_TIER_MAX_ARM_INSTANCES=2
 readonly FREE_TIER_MAX_VCNS=2
+readonly FREE_TIER_DEFAULT_ARM_OCPUS=2
+readonly FREE_TIER_DEFAULT_ARM_MEMORY_GB=12
+readonly FREE_TIER_DEFAULT_BOOT_VOLUME_GB=200
+readonly FREE_TIER_BOOT_VOLUME_VPU=120
 
 # Colors for output
 readonly RED='\033[0;31m'
@@ -83,6 +94,7 @@ declare -g availability_domain=""
 declare -g ubuntu_image_ocid=""
 declare -g ubuntu_arm_flex_image_ocid=""
 declare -g ssh_public_key=""
+declare -g ssh_key_basename="id_ed25519"
 declare -g auth_method="security_token"
 
 # Existing resource tracking (populated by inventory functions)
@@ -95,6 +107,10 @@ declare -gA EXISTING_AMD_INSTANCES=()
 declare -gA EXISTING_ARM_INSTANCES=()
 declare -gA EXISTING_BOOT_VOLUMES=()
 declare -gA EXISTING_BLOCK_VOLUMES=()
+declare -ga EXISTING_NON_FREE_SHAPE_NAMES=()
+
+# Strict limit enforcement (internal; set by resolve_enforce_limits_mode)
+declare -g STRICT_LIMITS_ACTIVE=false
 
 # Instance configuration
 declare -g amd_micro_instance_count=0
@@ -675,6 +691,76 @@ install_oci_cli() {
     print_success "OCI CLI installed successfully"
 }
 
+ensure_cloudbooter_package() {
+    local script_dir py
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    if [ -f ".venv/bin/python" ]; then
+        py=".venv/bin/python"
+    elif command_exists python3; then
+        py="python3"
+    else
+        print_debug "Python not available for cloudbooter validation"
+        return 1
+    fi
+
+    if ! "$py" -c "import cloudbooter" 2>/dev/null; then
+        print_debug "Installing cloudbooter package (editable)..."
+        "$py" -m pip install -e "$script_dir" --quiet 2>/dev/null || \
+            "$py" -m pip install -e "$script_dir" --user --quiet 2>/dev/null || true
+    fi
+}
+
+cloudbooter_python() {
+    if [ -f ".venv/bin/python" ]; then
+        echo ".venv/bin/python"
+    else
+        echo "python3"
+    fi
+}
+
+detect_subscription_plan_type() {
+    local home_region plan_type
+
+    home_region=$(oci_cmd "iam region-subscription list --tenancy-id $tenancy_ocid \
+        --query 'data[?\"is-home-region\"==\`true\`].\"region-name\" | [0]' --raw-output" 2>/dev/null) || home_region=""
+    if [ -z "$home_region" ] || [ "$home_region" = "null" ]; then
+        home_region="${OCI_AUTH_REGION:-$region}"
+    fi
+
+    plan_type=$(oci_cmd "osp-gateway subscription-service subscription list \
+        --compartment-id $tenancy_ocid \
+        --osp-home-region $home_region \
+        --query 'data[0].\"plan-type\"' --raw-output" 2>/dev/null) || plan_type=""
+
+    if [ -z "$plan_type" ] || [ "$plan_type" = "null" ]; then
+        echo "unknown"
+        return 0
+    fi
+    echo "$plan_type"
+}
+
+resolve_enforce_limits_mode() {
+    local plan_type py active
+
+    plan_type=$(detect_subscription_plan_type)
+    print_debug "Subscription plan_type: $plan_type"
+
+    ensure_cloudbooter_package || true
+    py=$(cloudbooter_python)
+
+    active=$("$py" -m cloudbooter.cli resolve-enforce \
+        --plan-type "$plan_type" \
+        --env-value "$ENFORCE_LIMITS" 2>/dev/null) || active="false"
+
+    if [ "$active" = "true" ]; then
+        STRICT_LIMITS_ACTIVE=true
+    else
+        STRICT_LIMITS_ACTIVE=false
+    fi
+    print_debug "STRICT_LIMITS_ACTIVE=$STRICT_LIMITS_ACTIVE"
+}
+
 install_terraform() {
     print_subheader "Terraform Setup"
     
@@ -1169,15 +1255,15 @@ fetch_oci_config_values() {
     print_subheader "Fetching OCI Configuration"
     
     # Tenancy OCID
-    tenancy_ocid=$(grep -oP '(?<=tenancy=).*' ~/.oci/config | head -1)
+    tenancy_ocid=$(read_oci_config_value "tenancy" "$OCI_CONFIG_FILE" "$OCI_PROFILE" 2>/dev/null || true)
     if [ -z "$tenancy_ocid" ]; then
-        print_error "Failed to fetch tenancy OCID from config"
+        print_error "Failed to fetch tenancy OCID from config ($OCI_CONFIG_FILE)"
         return 1
     fi
     print_status "Tenancy OCID: $tenancy_ocid"
     
     # User OCID
-    user_ocid=$(grep -P '^\s*user\s*=' ~/.oci/config | sed -E 's/^\s*user\s*=\s*//' | head -1)
+    user_ocid=$(read_oci_config_value "user" "$OCI_CONFIG_FILE" "$OCI_PROFILE" 2>/dev/null || true)
     if [ -z "$user_ocid" ]; then
         # Try to get from API for session token auth
         local user_info
@@ -1187,9 +1273,9 @@ fetch_oci_config_values() {
     print_status "User OCID: ${user_ocid:-N/A (session token auth)}"
     
     # Region
-    region=$(grep -oP '(?<=region=).*' ~/.oci/config | head -1)
+    region=$(read_oci_config_value "region" "$OCI_CONFIG_FILE" "$OCI_PROFILE" 2>/dev/null || true)
     if [ -z "$region" ]; then
-        print_error "Failed to fetch region from config"
+        print_error "Failed to fetch region from config ($OCI_CONFIG_FILE)"
         return 1
     fi
     print_status "Region: $region"
@@ -1198,7 +1284,7 @@ fetch_oci_config_values() {
     if [ "$auth_method" = "security_token" ]; then
         fingerprint="session_token_auth"
     else
-        fingerprint=$(grep -oP '(?<=fingerprint=).*' ~/.oci/config | head -1)
+        fingerprint=$(read_oci_config_value "fingerprint" "$OCI_CONFIG_FILE" "$OCI_PROFILE" 2>/dev/null || true)
     fi
     print_debug "Auth fingerprint: $fingerprint"
     
@@ -1230,7 +1316,7 @@ fetch_availability_domains() {
 fetch_ubuntu_images() {
     print_status "Fetching Ubuntu images for region $region..."
     
-    # Fetch x86 (AMD64) Ubuntu image
+    # Fetch x86 (AMD64) Ubuntu image — prefer 24.04 LTS when available
     print_status "  Looking for x86 Ubuntu image..."
     local x86_images
     x86_images=$(oci_cmd "compute image list \
@@ -1242,9 +1328,10 @@ fetch_ubuntu_images() {
         --query 'data[].{id:id,name:\"display-name\"}' \
         --all")
     
-    ubuntu_image_ocid=$(safe_jq "$x86_images" '.[0].id')
+    ubuntu_image_ocid=$(select_ubuntu_image_ocid "$x86_images")
     local x86_name
-    x86_name=$(safe_jq "$x86_images" '.[0].name')
+    x86_name=$(echo "$x86_images" | jq -r --arg id "$ubuntu_image_ocid" '.[] | select(.id == $id) | .name' 2>/dev/null | head -1)
+    [ -z "$x86_name" ] && x86_name=$(safe_jq "$x86_images" '.[0].name')
     
     if [ -n "$ubuntu_image_ocid" ] && [ "$ubuntu_image_ocid" != "null" ]; then
         print_success "  x86 image: $x86_name"
@@ -1254,7 +1341,7 @@ fetch_ubuntu_images() {
         ubuntu_image_ocid=""
     fi
     
-    # Fetch ARM Ubuntu image
+    # Fetch ARM Ubuntu image — prefer 24.04 LTS when available
     print_status "  Looking for ARM Ubuntu image..."
     local arm_images
     arm_images=$(oci_cmd "compute image list \
@@ -1266,9 +1353,10 @@ fetch_ubuntu_images() {
         --query 'data[].{id:id,name:\"display-name\"}' \
         --all")
     
-    ubuntu_arm_flex_image_ocid=$(safe_jq "$arm_images" '.[0].id')
+    ubuntu_arm_flex_image_ocid=$(select_ubuntu_image_ocid "$arm_images")
     local arm_name
-    arm_name=$(safe_jq "$arm_images" '.[0].name')
+    arm_name=$(echo "$arm_images" | jq -r --arg id "$ubuntu_arm_flex_image_ocid" '.[] | select(.id == $id) | .name' 2>/dev/null | head -1)
+    [ -z "$arm_name" ] && arm_name=$(safe_jq "$arm_images" '.[0].name')
     
     if [ -n "$ubuntu_arm_flex_image_ocid" ] && [ "$ubuntu_arm_flex_image_ocid" != "null" ]; then
         print_success "  ARM image: $arm_name"
@@ -1279,24 +1367,41 @@ fetch_ubuntu_images() {
     fi
 }
 
+# Prefer Canonical Ubuntu 24.04; fall back to newest image in list.
+select_ubuntu_image_ocid() {
+    local images_json="$1"
+    local preferred
+    preferred=$(echo "$images_json" | jq -r '.[] | select(.name | test("24\\.04")) | .id' 2>/dev/null | head -1)
+    if [ -n "$preferred" ] && [ "$preferred" != "null" ]; then
+        echo "$preferred"
+        return 0
+    fi
+    safe_jq "$images_json" '.[0].id'
+}
+
 generate_ssh_keys() {
     print_status "Setting up SSH keys..."
     
     local ssh_dir="$PWD/ssh_keys"
     mkdir -p "$ssh_dir"
     
-    if [ ! -f "$ssh_dir/id_rsa" ]; then
-        print_status "Generating new SSH key pair..."
-        ssh-keygen -t rsa -b 4096 -f "$ssh_dir/id_rsa" -N "" -q
-        chmod 600 "$ssh_dir/id_rsa"
-        chmod 644 "$ssh_dir/id_rsa.pub"
-        print_success "SSH key pair generated at $ssh_dir/"
+    if [ -f "$ssh_dir/id_ed25519" ]; then
+        ssh_key_basename="id_ed25519"
+        print_status "Using existing ed25519 SSH key pair at $ssh_dir/"
+    elif [ -f "$ssh_dir/id_rsa" ]; then
+        ssh_key_basename="id_rsa"
+        print_status "Using existing RSA SSH key pair at $ssh_dir/"
     else
-        print_status "Using existing SSH key pair at $ssh_dir/"
+        print_status "Generating new ed25519 SSH key pair..."
+        ssh-keygen -t ed25519 -f "$ssh_dir/id_ed25519" -N "" -q
+        chmod 600 "$ssh_dir/id_ed25519"
+        chmod 644 "$ssh_dir/id_ed25519.pub"
+        ssh_key_basename="id_ed25519"
+        print_success "SSH key pair generated at $ssh_dir/"
     fi
     
     # shellcheck disable=SC2034  # exported for Terraform/template consumption
-    ssh_public_key=$(cat "$ssh_dir/id_rsa.pub")
+    ssh_public_key=$(cat "$ssh_dir/${ssh_key_basename}.pub")
 }
 
 # ============================================================================
@@ -1314,6 +1419,375 @@ inventory_all_resources() {
     inventory_storage_resources
     
     display_resource_inventory
+    run_usage_review
+}
+
+build_inventory_json() {
+    local total_boot_gb=0 total_block_gb=0
+    local boot_data block_data size
+    local arm_items=()
+    local id inst_data name ocpus memory shape
+    local shapes_json
+
+    for boot_data in "${EXISTING_BOOT_VOLUMES[@]}"; do
+        size=$(echo "$boot_data" | cut -d'|' -f2)
+        total_boot_gb=$((total_boot_gb + size))
+    done
+
+    for block_data in "${EXISTING_BLOCK_VOLUMES[@]}"; do
+        size=$(echo "$block_data" | cut -d'|' -f2)
+        total_block_gb=$((total_block_gb + size))
+    done
+
+    for id in "${!EXISTING_ARM_INSTANCES[@]}"; do
+        inst_data="${EXISTING_ARM_INSTANCES[$id]}"
+        name=$(echo "$inst_data" | cut -d'|' -f1)
+        shape=$(echo "$inst_data" | cut -d'|' -f3)
+        ocpus=$(echo "$inst_data" | cut -d'|' -f6)
+        memory=$(echo "$inst_data" | cut -d'|' -f7)
+        ocpus=${ocpus%.*}
+        memory=${memory%.*}
+        arm_items+=("$(jq -n \
+            --arg id "$id" \
+            --arg n "$name" \
+            --argjson o "${ocpus:-0}" \
+            --argjson m "${memory:-0}" \
+            --arg s "$shape" \
+            '{id:$id,name:$n,ocpus:$o,memory_gb:$m,shape:$s}')")
+    done
+
+    local arm_json="[]"
+    if [ ${#arm_items[@]} -gt 0 ]; then
+        arm_json="[$(IFS=,; echo "${arm_items[*]}")]"
+    fi
+
+    if [ ${#EXISTING_NON_FREE_SHAPE_NAMES[@]} -gt 0 ]; then
+        shapes_json=$(printf '%s\n' "${EXISTING_NON_FREE_SHAPE_NAMES[@]}" | jq -R . | jq -s .)
+    else
+        shapes_json="[]"
+    fi
+
+    jq -n \
+        --argjson amd "${#EXISTING_AMD_INSTANCES[@]}" \
+        --argjson arm_json "$arm_json" \
+        --argjson boot "$total_boot_gb" \
+        --argjson block "$total_block_gb" \
+        --argjson block_count "${#EXISTING_BLOCK_VOLUMES[@]}" \
+        --argjson vcn "${#EXISTING_VCNS[@]}" \
+        --argjson shapes "$shapes_json" \
+        '{
+            amd_instances: $amd,
+            arm_instances: $arm_json,
+            boot_storage_gb: $boot,
+            block_storage_gb: $block,
+            block_volume_count: $block_count,
+            vcn_count: $vcn,
+            non_free_shapes: $shapes
+        }'
+}
+
+run_usage_review() {
+    local py payload
+
+    ensure_cloudbooter_package || return 0
+    py=$(cloudbooter_python)
+
+    if ! "$py" -c "import cloudbooter" 2>/dev/null; then
+        print_debug "Skipping usage review (cloudbooter not installed)"
+        return 0
+    fi
+
+    payload=$(build_inventory_json)
+    local findings
+    findings=$(echo "$payload" | "$py" -m cloudbooter.cli audit --stdin-json 2>/dev/null) || return 0
+
+    if [ -z "$findings" ]; then
+        return 0
+    fi
+
+    echo ""
+    print_header "USAGE REVIEW"
+    print_status "Existing resources outside the recommended billing-safe profile:"
+    echo "$findings" | while IFS= read -r line; do
+        [ -n "$line" ] && print_warning "  $line"
+    done
+    print_status "These existing resources do not block apply when the proposed configuration is billing-safe."
+    print_status "See docs/FREE_TIER_LIMITS.md to reduce usage toward \$0 forecast."
+    echo ""
+
+    maybe_auto_resize_legacy_arm
+}
+
+count_legacy_arm_instances() {
+    local count=0
+    local id inst_data ocpus memory
+
+    for id in "${!EXISTING_ARM_INSTANCES[@]}"; do
+        inst_data="${EXISTING_ARM_INSTANCES[$id]}"
+        ocpus=$(echo "$inst_data" | cut -d'|' -f6)
+        memory=$(echo "$inst_data" | cut -d'|' -f7)
+        ocpus=${ocpus%.*}
+        memory=${memory%.*}
+        if [ "${ocpus:-0}" -gt "$FREE_TIER_MAX_ARM_OCPUS" ] || \
+           [ "${memory:-0}" -gt "$FREE_TIER_MAX_ARM_MEMORY_GB" ]; then
+            count=$((count + 1))
+        fi
+    done
+    echo "$count"
+}
+
+should_auto_resize_legacy_arm() {
+    local py active extra_args=()
+
+    if [ "$RESIZE_LEGACY_ARM_ONLY" = "true" ]; then
+        return 0
+    fi
+
+    ensure_cloudbooter_package || {
+        case "${AUTO_RESIZE_LEGACY_ARM,,}" in
+            true|yes|1) return 0 ;;
+            auto|"") [ "$NON_INTERACTIVE" = "true" ] ;;
+            *) return 1 ;;
+        esac
+    }
+
+    py=$(cloudbooter_python)
+    [ "$NON_INTERACTIVE" = "true" ] && extra_args+=(--non-interactive)
+    [ "$RESIZE_LEGACY_ARM_ONLY" = "true" ] && extra_args+=(--resize-only)
+
+    active=$("$py" -m cloudbooter.cli should-auto-resize \
+        --env-value "$AUTO_RESIZE_LEGACY_ARM" \
+        "${extra_args[@]}" 2>/dev/null) || active="false"
+
+    [ "$active" = "true" ]
+}
+
+wait_for_instance_state() {
+    local instance_id=$1
+    local desired_state=$2
+    local timeout=${3:-600}
+    local elapsed=0
+    local interval=15
+    local state
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        state=$(oci_cmd "compute instance get --instance-id $instance_id \
+            --query 'data.\"lifecycle-state\"' --raw-output" 2>/dev/null) || state=""
+        if [ "$state" = "$desired_state" ]; then
+            return 0
+        fi
+        print_debug "  Waiting for $instance_id (state=${state:-unknown})..."
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    return 1
+}
+
+resize_arm_instance_to_billing_safe() {
+    local instance_id=$1
+    local display_name=$2
+    local shape_cfg
+    local abs_cfg
+
+    shape_cfg=$(mktemp)
+    jq -n \
+        --argjson ocpus "$FREE_TIER_DEFAULT_ARM_OCPUS" \
+        --argjson mem "$FREE_TIER_DEFAULT_ARM_MEMORY_GB" \
+        '{ocpus: $ocpus, memoryInGBs: $mem}' > "$shape_cfg"
+    abs_cfg=$(readlink -f "$shape_cfg" 2>/dev/null || realpath "$shape_cfg" 2>/dev/null || echo "$shape_cfg")
+
+    print_status "Resizing ${display_name} to ${FREE_TIER_DEFAULT_ARM_OCPUS} OCPU / ${FREE_TIER_DEFAULT_ARM_MEMORY_GB} GB (reboot expected)..."
+
+    if ! oci_cmd "compute instance update --instance-id $instance_id \
+        --shape-config file://$abs_cfg --force" >/dev/null 2>&1; then
+        print_error "Failed to resize ${display_name} ($instance_id)"
+        rm -f "$shape_cfg"
+        return 1
+    fi
+    rm -f "$shape_cfg"
+
+    if wait_for_instance_state "$instance_id" "RUNNING" 600; then
+        print_success "Resized ${display_name} — instance is RUNNING"
+    else
+        print_warning "Resize submitted for ${display_name}; instance not RUNNING yet (check OCI Console)"
+    fi
+    return 0
+}
+
+resize_legacy_arm_instances() {
+    local legacy_count=0
+    local resized=0
+    local failed=0
+    local id inst_data name ocpus memory
+    RESIZE_OUTCOMES=()
+
+    legacy_count=$(count_legacy_arm_instances)
+    if [ "$legacy_count" -eq 0 ]; then
+        print_status "No legacy ARM instances need resizing"
+        return 0
+    fi
+
+    print_header "RESIZE LEGACY ARM INSTANCES"
+    print_status "Downsizing ${legacy_count} instance(s) to ${FREE_TIER_DEFAULT_ARM_OCPUS} OCPU / ${FREE_TIER_DEFAULT_ARM_MEMORY_GB} GB..."
+
+    for id in "${!EXISTING_ARM_INSTANCES[@]}"; do
+        inst_data="${EXISTING_ARM_INSTANCES[$id]}"
+        name=$(echo "$inst_data" | cut -d'|' -f1)
+        ocpus=$(echo "$inst_data" | cut -d'|' -f6)
+        memory=$(echo "$inst_data" | cut -d'|' -f7)
+        ocpus=${ocpus%.*}
+        memory=${memory%.*}
+
+        if [ "${ocpus:-0}" -le "$FREE_TIER_MAX_ARM_OCPUS" ] && \
+           [ "${memory:-0}" -le "$FREE_TIER_MAX_ARM_MEMORY_GB" ]; then
+            continue
+        fi
+
+        local before_ocpus=$ocpus before_memory=$memory resize_ok=0
+        if resize_arm_instance_to_billing_safe "$id" "$name"; then
+            resized=$((resized + 1))
+            resize_ok=1
+            inst_data="${name}|RUNNING|$FREE_TIER_ARM_SHAPE|none|none|$FREE_TIER_DEFAULT_ARM_OCPUS|$FREE_TIER_DEFAULT_ARM_MEMORY_GB"
+            EXISTING_ARM_INSTANCES["$id"]="$inst_data"
+        else
+            failed=$((failed + 1))
+        fi
+
+        RESIZE_OUTCOMES+=("$(jq -n \
+            --arg id "$id" \
+            --arg n "$name" \
+            --argjson before_o "${before_ocpus:-0}" \
+            --argjson before_m "${before_memory:-0}" \
+            --argjson after_o "$FREE_TIER_DEFAULT_ARM_OCPUS" \
+            --argjson after_m "$FREE_TIER_DEFAULT_ARM_MEMORY_GB" \
+            --argjson ok "$resize_ok" \
+            '{
+                id: $id,
+                name: $n,
+                before_ocpus: $before_o,
+                before_memory_gb: $before_m,
+                after_ocpus: $after_o,
+                after_memory_gb: $after_m,
+                success: ($ok == 1)
+            }')")
+    done
+
+    echo ""
+    print_success "Resize complete: ${resized} succeeded, ${failed} failed"
+    calculate_available_resources
+    return $failed
+}
+
+write_cloudbooter_report_json() {
+    [ -n "$CLOUDBOOTER_REPORT_JSON" ] || return 0
+
+    local plan_type outcomes_json inventory_json
+    plan_type=$(detect_subscription_plan_type 2>/dev/null || echo "unknown")
+    inventory_json=$(build_inventory_json)
+
+    if [ ${#RESIZE_OUTCOMES[@]:-0} -gt 0 ]; then
+        outcomes_json="[$(IFS=,; echo "${RESIZE_OUTCOMES[*]}")]"
+    else
+        outcomes_json="[]"
+    fi
+
+    mkdir -p "$(dirname "$CLOUDBOOTER_REPORT_JSON")"
+    jq -n \
+        --arg plan "$plan_type" \
+        --argjson enforce "$([ "$STRICT_LIMITS_ACTIVE" = "true" ] && echo true || echo false)" \
+        --argjson inventory "$inventory_json" \
+        --argjson outcomes "$outcomes_json" \
+        '{
+            plan_type: $plan,
+            enforce_limits: $enforce,
+            inventory: $inventory,
+            resize_outcomes: $outcomes
+        }' > "$CLOUDBOOTER_REPORT_JSON"
+}
+
+maybe_auto_resize_legacy_arm() {
+    local legacy_count choice
+
+    [ "$RESIZE_LEGACY_ARM_ONLY" = "true" ] && return 0
+
+    legacy_count=$(count_legacy_arm_instances)
+    [ "$legacy_count" -gt 0 ] || return 0
+
+    if should_auto_resize_legacy_arm; then
+        resize_legacy_arm_instances
+        return $?
+    fi
+
+    if [ "$NON_INTERACTIVE" = "true" ]; then
+        return 0
+    fi
+
+    echo -n -e "${BLUE}Resize ${legacy_count} legacy ARM instance(s) to 2/12 now? [y/N]: ${NC}"
+    read -r choice
+    if [[ "$choice" =~ ^[Yy]$ ]]; then
+        resize_legacy_arm_instances
+    else
+        print_status "Skip with AUTO_RESIZE_LEGACY_ARM=true or run: RESIZE_LEGACY_ARM_ONLY=true ./setup_oci_terraform.sh"
+    fi
+}
+
+gate_validate_proposed_config() {
+    local py validate_json amd_count arm_count total_ocpus total_memory
+    local total_boot block_sum total_storage b bv o m
+
+    [ "$STRICT_LIMITS_ACTIVE" = "true" ] || return 0
+
+    ensure_cloudbooter_package || {
+        print_error "Cannot validate configuration (cloudbooter unavailable)"
+        return 1
+    }
+
+    py=$(cloudbooter_python)
+    amd_count=$amd_micro_instance_count
+    arm_count=$arm_flex_instance_count
+    total_ocpus=0
+    total_memory=0
+    for o in $arm_flex_ocpus_per_instance; do
+        total_ocpus=$((total_ocpus + o))
+    done
+    for m in $arm_flex_memory_per_instance; do
+        total_memory=$((total_memory + m))
+    done
+
+    total_boot=$((amd_micro_instance_count * amd_micro_boot_volume_size_gb))
+    for b in $arm_flex_boot_volume_size_gb; do
+        total_boot=$((total_boot + b))
+    done
+
+    block_sum=0
+    for bv in "${arm_flex_block_volumes[@]}"; do
+        block_sum=$((block_sum + bv))
+    done
+    total_storage=$((total_boot + block_sum))
+
+    validate_json=$(jq -n \
+        --argjson amd "$amd_count" \
+        --argjson arm "$arm_count" \
+        --argjson ocpus "$total_ocpus" \
+        --argjson mem "$total_memory" \
+        --argjson storage "$total_storage" \
+        --argjson block "$block_sum" \
+        '{
+            amd_instances: $amd,
+            arm_instances: $arm,
+            arm_ocpus_total: $ocpus,
+            arm_memory_gb_total: $mem,
+            total_storage_gb: $storage,
+            block_storage_gb: $block,
+            billing_safe: true
+        }')
+
+    if ! echo "$validate_json" | "$py" -m cloudbooter.cli validate --stdin-json; then
+        print_error "Proposed configuration is not billing-safe under current limits."
+        print_status "See docs/FREE_TIER_LIMITS.md for remediation."
+        return 1
+    fi
+    return 0
 }
 
 inventory_compute_instances() {
@@ -1386,8 +1860,13 @@ inventory_compute_instances() {
             
             EXISTING_ARM_INSTANCES["$id"]="$name|$state|$shape|${public_ip:-none}|${private_ip:-none}|$ocpus|$memory"
             print_status "  Found ARM instance: $name ($state, ${ocpus}OCPUs, ${memory}GB) - IP: ${public_ip:-none}"
+            if [ "${ocpus%.*}" -gt "$FREE_TIER_MAX_ARM_OCPUS" ] 2>/dev/null || \
+               [ "${memory%.*}" -gt "$FREE_TIER_MAX_ARM_MEMORY_GB" ] 2>/dev/null; then
+                print_warning "  Legacy ARM sizing detected (${ocpus} OCPU / ${memory} GB). Resize to ${FREE_TIER_MAX_ARM_OCPUS}/${FREE_TIER_MAX_ARM_MEMORY_GB} before PAYG upgrade."
+            fi
         else
             print_debug "  Found non-free-tier instance: $name ($shape)"
+            EXISTING_NON_FREE_SHAPE_NAMES+=("$shape")
         fi
     done <<< "$(echo "$all_instances" | jq -c '.[]' 2>/dev/null)"
     
@@ -1790,7 +2269,8 @@ prompt_configuration() {
         echo "  2) Use saved configuration from variables.tf (not available)"
     fi
     echo "  3) Configure new instances (respecting Free Tier limits)"
-    echo "  4) Maximum Free Tier configuration (use all available resources)"
+    echo "  4) Recommended (billing-safe): 1× A1 (2 OCPU / 12 GB), 200 GB boot [default]"
+    echo "  5) Maximum Free Tier (all AMD + A1; PAYG billing risk if misconfigured)"
     echo ""
     
     local choice
@@ -1799,18 +2279,18 @@ prompt_configuration() {
             choice=1
             print_status "Auto mode: Using existing instances"
         elif [ "$NON_INTERACTIVE" = "true" ]; then
-            choice=1
-            print_status "Non-interactive mode: Using existing instances"
+            choice=4
+            print_status "Non-interactive mode: Using recommended billing-safe configuration"
         else
-            # Use prompt_with_default so the user sees the default inline (e.g. "[1]") as requested
-            raw_choice=$(prompt_with_default "Choose configuration (1-4)" "1")
+            # Use prompt_with_default so the user sees the default inline (e.g. "[4]") as requested
+            raw_choice=$(prompt_with_default "Choose configuration (1-5)" "4")
             # Normalize input (remove CR and trim whitespace)
             raw_choice=$(echo "$raw_choice" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             # Validate numeric range
-            if [[ "$raw_choice" =~ ^[0-9]+$ ]] && [ "$raw_choice" -ge 1 ] && [ "$raw_choice" -le 4 ]; then
+            if [[ "$raw_choice" =~ ^[0-9]+$ ]] && [ "$raw_choice" -ge 1 ] && [ "$raw_choice" -le 5 ]; then
                 choice=$raw_choice
             else
-                print_error "Please enter a number between 1 and 4 (received: '$raw_choice')"
+                print_error "Please enter a number between 1 and 5 (received: '$raw_choice')"
                 continue
             fi
         fi
@@ -1831,9 +2311,24 @@ prompt_configuration() {
                 ;;
             3)
                 configure_custom_instances
+                if [ "$STRICT_LIMITS_ACTIVE" = "true" ] && ! gate_validate_proposed_config; then
+                    continue
+                fi
                 break
                 ;;
             4)
+                configure_recommended_billing_safe
+                break
+                ;;
+            5)
+                if [ "$STRICT_LIMITS_ACTIVE" = "true" ]; then
+                    print_warning "Maximum Free Tier is not available under current billing-safe limits."
+                    print_warning "On PAYG accounts, resources outside Always Free limits incur charges."
+                    continue
+                fi
+                if ! confirm_maximum_free_tier; then
+                    continue
+                fi
                 configure_maximum_free_tier
                 break
                 ;;
@@ -1886,19 +2381,40 @@ configure_from_existing_instances() {
     
     # Set defaults if no instances exist
     if [ "$amd_micro_instance_count" -eq 0 ] && [ "$arm_flex_instance_count" -eq 0 ]; then
-        print_status "No existing instances found, using default configuration"
-        amd_micro_instance_count=0
-        arm_flex_instance_count=1
-        arm_flex_ocpus_per_instance="4"
-        arm_flex_memory_per_instance="24"
-        arm_flex_boot_volume_size_gb="200"
-        arm_flex_hostnames=("arm-instance-1")
-        arm_flex_block_volumes=(0)
+        print_status "No existing instances found, using recommended billing-safe defaults"
+        configure_recommended_billing_safe
+        return 0
     fi
     
     amd_micro_boot_volume_size_gb=50
     
     print_success "Configuration: ${amd_micro_instance_count}x AMD, ${arm_flex_instance_count}x ARM"
+}
+
+confirm_maximum_free_tier() {
+    print_warning "Maximum Free Tier may provision multiple instances and split storage."
+    print_warning "On PAYG accounts, resources outside Always Free limits incur charges."
+    print_warning "Recommended: use option 4 (billing-safe) unless you understand the limits."
+    if [ "$NON_INTERACTIVE" = "true" ]; then
+        return 0
+    fi
+    echo -n -e "${YELLOW}Continue with Maximum Free Tier? [y/N]: ${NC}"
+    read -r confirm
+    [[ "$confirm" =~ ^[Yy]$ ]]
+}
+
+configure_recommended_billing_safe() {
+    print_status "Configuring recommended billing-safe profile (viren070-aligned)..."
+    amd_micro_instance_count=0
+    amd_micro_boot_volume_size_gb=50
+    amd_micro_hostnames=()
+    arm_flex_instance_count=1
+    arm_flex_ocpus_per_instance="$FREE_TIER_DEFAULT_ARM_OCPUS"
+    arm_flex_memory_per_instance="$FREE_TIER_DEFAULT_ARM_MEMORY_GB"
+    arm_flex_boot_volume_size_gb="$FREE_TIER_DEFAULT_BOOT_VOLUME_GB"
+    arm_flex_hostnames=("arm-instance-1")
+    arm_flex_block_volumes=(0)
+    print_success "Recommended config: 1× ARM A1 (${FREE_TIER_DEFAULT_ARM_OCPUS} OCPU / ${FREE_TIER_DEFAULT_ARM_MEMORY_GB} GB), ${FREE_TIER_DEFAULT_BOOT_VOLUME_GB} GB boot @ ${FREE_TIER_BOOT_VOLUME_VPU} VPU"
 }
 
 configure_custom_instances() {
@@ -1923,7 +2439,7 @@ configure_custom_instances() {
     
     # ARM instances
     if [ -n "$ubuntu_arm_flex_image_ocid" ] && [ "$AVAILABLE_ARM_OCPUS" -gt 0 ]; then
-        arm_flex_instance_count=$(prompt_int_range "Number of ARM instances (0-4)" "1" "0" "4")
+        arm_flex_instance_count=$(prompt_int_range "Number of ARM instances (0-$FREE_TIER_MAX_ARM_INSTANCES)" "1" "0" "$FREE_TIER_MAX_ARM_INSTANCES")
         
         arm_flex_hostnames=()
         arm_flex_ocpus_per_instance=""
@@ -2123,9 +2639,9 @@ locals {
   ubuntu_arm_image_ocid = "$ubuntu_arm_flex_image_ocid"
   
   # SSH Configuration
-  ssh_pubkey_path      = pathexpand("./ssh_keys/id_rsa.pub")
-  ssh_pubkey_data      = file(pathexpand("./ssh_keys/id_rsa.pub"))
-  ssh_private_key_path = pathexpand("./ssh_keys/id_rsa")
+  ssh_pubkey_path      = pathexpand("./ssh_keys/${ssh_key_basename}.pub")
+  ssh_pubkey_data      = file(pathexpand("./ssh_keys/${ssh_key_basename}.pub"))
+  ssh_private_key_path = pathexpand("./ssh_keys/${ssh_key_basename}")
   
   # AMD x86 Micro Instances Configuration
   amd_micro_instance_count      = $amd_micro_instance_count
@@ -2292,15 +2808,7 @@ resource "oci_core_default_security_list" "main" {
   # Allow ALL ingress traffic on ALL ports and ALL protocols (IPv4)
   # OCI Security List: protocol "all" with no tcp/udp options = every port, every protocol
   # Eliminates the need to manually open ports in the OCI console after deployment.
-  ingress_security_rules {
-    protocol = "all"
-    source   = "0.0.0.0/0"
-  }
-  # Allow ALL ingress traffic on ALL ports and ALL protocols (IPv6)
-  ingress_security_rules {
-    protocol = "all"
-    source   = "::/0"
-  }
+__SECURITY_INGRESS_RULES__
 }
 
 resource "oci_core_subnet" "main" {
@@ -2391,6 +2899,7 @@ resource "oci_core_instance" "arm" {
     source_type             = "image"
     source_id               = local.ubuntu_arm_image_ocid
     boot_volume_size_in_gbs = local.arm_flex_boot_volume_size_gb[count.index]
+    boot_volume_vpus_per_gb = __BOOT_VOLUME_VPU__
   }
   
   metadata = {
@@ -2470,7 +2979,7 @@ output "amd_instances" {
       private_ip = oci_core_instance.amd[i].private_ip
       ipv6       = oci_core_ipv6.amd_ipv6[i].ip_address
       state      = oci_core_instance.amd[i].state
-      ssh        = "ssh -i ./ssh_keys/id_rsa ubuntu@${oci_core_instance.amd[i].public_ip}"
+      ssh        = "ssh -i ./ssh_keys/__SSH_KEY_BASENAME__ ubuntu@${oci_core_instance.amd[i].public_ip}"
     }
   } : {}
 }
@@ -2486,7 +2995,7 @@ output "arm_instances" {
       state      = oci_core_instance.arm[i].state
       ocpus      = local.arm_flex_ocpus_per_instance[i]
       memory_gb  = local.arm_flex_memory_per_instance[i]
-      ssh        = "ssh -i ./ssh_keys/id_rsa ubuntu@${oci_core_instance.arm[i].public_ip}"
+      ssh        = "ssh -i ./ssh_keys/__SSH_KEY_BASENAME__ ubuntu@${oci_core_instance.arm[i].public_ip}"
     }
   } : {}
 }
@@ -2513,7 +3022,76 @@ output "summary" {
 }
 EOFMAIN
     
+    inject_main_tf_dynamic_content
+    
     print_success "main.tf created"
+}
+
+generate_security_list_ingress_hcl() {
+    if [ "$OPEN_ALL_PORTS" = "true" ]; then
+        cat << 'EOF'
+  ingress_security_rules {
+    protocol = "all"
+    source   = "0.0.0.0/0"
+  }
+  ingress_security_rules {
+    protocol = "all"
+    source   = "::/0"
+  }
+EOF
+        return 0
+    fi
+
+    cat << 'EOF'
+  # SSH (billing-safe default — add ports via EXTRA_INGRESS_PORTS or OPEN_ALL_PORTS=true)
+  ingress_security_rules {
+    protocol = "6"
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+EOF
+
+    if [ -n "$EXTRA_INGRESS_PORTS" ]; then
+        local port
+        IFS=',' read -ra port_list <<< "$EXTRA_INGRESS_PORTS"
+        for port in "${port_list[@]}"; do
+            port=$(echo "$port" | tr -d ' ')
+            [[ "$port" =~ ^[0-9]+$ ]] || continue
+            cat << EOF
+  ingress_security_rules {
+    protocol = "6"
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = $port
+      max = $port
+    }
+  }
+EOF
+        done
+    fi
+}
+
+inject_main_tf_dynamic_content() {
+    local sec_rules
+    sec_rules=$(generate_security_list_ingress_hcl)
+    printf '%s\n' "$sec_rules" > .main_tf_sec_rules.tmp
+    python3 - "$ssh_key_basename" "$FREE_TIER_BOOT_VOLUME_VPU" << 'PY'
+import pathlib
+import sys
+
+key, vpu = sys.argv[1], sys.argv[2]
+main = pathlib.Path("main.tf")
+rules = pathlib.Path(".main_tf_sec_rules.tmp").read_text()
+text = main.read_text()
+text = text.replace("__SECURITY_INGRESS_RULES__", rules.rstrip())
+text = text.replace("__SSH_KEY_BASENAME__", key)
+text = text.replace("__BOOT_VOLUME_VPU__", vpu)
+main.write_text(text)
+pathlib.Path(".main_tf_sec_rules.tmp").unlink(missing_ok=True)
+PY
 }
 
 create_terraform_block_volumes() {
@@ -2808,6 +3386,14 @@ run_terraform_workflow() {
         return 1
     fi
     print_success "Configuration valid"
+
+    if [ "$STRICT_LIMITS_ACTIVE" = "true" ]; then
+        print_status "Step 3b: Validating billing-safe proposed configuration..."
+        if ! gate_validate_proposed_config; then
+            return 1
+        fi
+        print_success "Proposed configuration is billing-safe"
+    fi
     
     # Step 4: Plan
     print_status "Step 4: Creating execution plan..."
@@ -2865,7 +3451,8 @@ terraform_menu() {
         echo "  5) Show current state"
         echo "  6) Destroy infrastructure"
         echo "  7) Reconfigure"
-        echo "  8) Exit"
+        echo "  8) Resize legacy ARM (4/24 → 2/12)"
+        echo "  9) Exit"
         echo ""
         
         if [ "$AUTO_DEPLOY" = "true" ] || [ "$NON_INTERACTIVE" = "true" ]; then
@@ -2911,6 +3498,9 @@ terraform_menu() {
                 return 1  # Signal to reconfigure
                 ;;
             8)
+                resize_legacy_arm_instances
+                ;;
+            9)
                 return 0
                 ;;
             *)
@@ -2936,6 +3526,23 @@ main() {
     print_header "OCI TERRAFORM SETUP"
     print_status "This script safely manages Oracle Cloud Free Tier resources"
     echo ""
+
+    if [ "$RESIZE_LEGACY_ARM_ONLY" = "true" ]; then
+        install_prerequisites
+        install_terraform
+        install_oci_cli
+        # shellcheck disable=SC1091
+        [ -f ".venv/bin/activate" ] && source .venv/bin/activate
+        setup_oci_config
+        fetch_oci_config_values
+        resolve_enforce_limits_mode
+        fetch_availability_domains
+        inventory_all_resources
+        resize_legacy_arm_instances
+        resize_exit=$?
+        write_cloudbooter_report_json
+        exit $resize_exit
+    fi
     
     # Phase 1: Prerequisites
     install_prerequisites
@@ -2951,6 +3558,7 @@ main() {
     
     # Phase 3: Fetch OCI information
     fetch_oci_config_values
+    resolve_enforce_limits_mode
     fetch_availability_domains
     fetch_ubuntu_images
     generate_ssh_keys

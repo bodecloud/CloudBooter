@@ -32,7 +32,7 @@ jobs:
         uses: ludeeus/action-shellcheck@v2
         with:
           files: |
-            scripts/*.sh
-            setup_oci_terraform.sh
+            helper_scripts/*.sh
+            cloud/OCI/setup_oci_terraform.sh
           exclude: ''
           options: '-e SC2230 -e SC1090'

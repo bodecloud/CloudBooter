@@ -1,4 +1,7 @@
 #!/bin/bash
+# EXAMPLE ONLY — not integrated with CloudBooter bootstrap.
+# Uses June 2026 Always Free limits: VM.Standard.A1.Flex at 2 OCPU / 12 GB.
+# Replace OCIDs, SSH key, and availability domain before use.
 
 FLAG_FILE="$HOME/.oci/instance_launched"
 SUCCESS_LOG="$HOME/.oci/instance_launch_success.log"
@@ -35,7 +38,7 @@ output=$(oci compute instance launch \
   --compartment-id ocid1.tenancy.oc1..xxxxxxxxx \
   --subnet-id ocid1.subnet.oc1.ap-tokyo-1.xxxxxq \
   --image-id ocid1.image.oc1.ap-tokyo-1.aaaaaaaagupkwu6yar4fcxrybrz763z6ndedu3syyclc2ozjimiglyhz62va \
-  --shape-config '{ "ocpus": 4, "memoryInGBs": 24 }' \
+  --shape-config '{ "ocpus": 2, "memoryInGBs": 12 }' \
   --shape VM.Standard.A1.Flex \
   --display-name oracle \
   --hostname-label oracle \

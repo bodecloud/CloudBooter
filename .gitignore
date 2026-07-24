@@ -350,6 +350,11 @@ cloud-init.yaml*
 ssh_keys
 reference_readonly
 .cursor/mcp.json
+
+# Bitwarden / OCI orchestrator secrets and reports
+cloud/OCI/.bw-items.json
+cloud/OCI/reports/oci-bw-migration-*
+.cache/cloudbooter/
 ssh_keys/** */
 ssh_keys/*
 id_rsa
