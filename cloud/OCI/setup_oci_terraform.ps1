@@ -13,6 +13,8 @@ $ErrorActionPreference = 'Stop'
 # TUI-first execution model
 $DEBUG = if ($env:DEBUG) { $env:DEBUG } else { 'false' }
 $FORCE_REAUTH = if ($env:FORCE_REAUTH) { $env:FORCE_REAUTH } else { 'false' }
+$OPEN_ALL_PORTS = if ($env:OPEN_ALL_PORTS) { $env:OPEN_ALL_PORTS } else { 'false' }
+$EXTRA_INGRESS_PORTS = if ($env:EXTRA_INGRESS_PORTS) { $env:EXTRA_INGRESS_PORTS } else { '' }
 $LOG_LEVEL = if ($env:LOG_LEVEL) { $env:LOG_LEVEL.ToUpperInvariant() } else { 'INFO' }
 $LOG_TIMESTAMPS = if ($env:LOG_TIMESTAMPS) { $env:LOG_TIMESTAMPS } else { 'true' }
 $LOG_CATALOG_SIZE = if ($env:LOG_CATALOG_SIZE) { [int]$env:LOG_CATALOG_SIZE } else { 900 }
@@ -51,16 +53,20 @@ if (-not $env:OCI_CLI_SUPPRESS_FILE_PERMISSIONS_CHECK) {
     $env:OCI_CLI_SUPPRESS_FILE_PERMISSIONS_CHECK = 'True'
 }
 
-# Oracle Free Tier Limits (as of 2025)
+# Oracle Free Tier Limits (Always Free — updated June 2026)
 $FREE_TIER_MAX_AMD_INSTANCES = 2
 $FREE_TIER_AMD_SHAPE = 'VM.Standard.E2.1.Micro'
-$FREE_TIER_MAX_ARM_OCPUS = 4
-$FREE_TIER_MAX_ARM_MEMORY_GB = 24
+$FREE_TIER_MAX_ARM_OCPUS = 2
+$FREE_TIER_MAX_ARM_MEMORY_GB = 12
 $FREE_TIER_ARM_SHAPE = 'VM.Standard.A1.Flex'
 $FREE_TIER_MAX_STORAGE_GB = 200
 $FREE_TIER_MIN_BOOT_VOLUME_GB = 47
-$FREE_TIER_MAX_ARM_INSTANCES = 4
+$FREE_TIER_MAX_ARM_INSTANCES = 2
 $FREE_TIER_MAX_VCNS = 2
+$FREE_TIER_DEFAULT_ARM_OCPUS = 2
+$FREE_TIER_DEFAULT_ARM_MEMORY_GB = 12
+$FREE_TIER_DEFAULT_BOOT_VOLUME_GB = 200
+$FREE_TIER_BOOT_VOLUME_VPU = 120
 
 # Colors for output
 $RED = [char]27 + '[0;31m'
@@ -93,6 +99,7 @@ $availability_domain = ''
 $ubuntu_image_ocid = ''
 $ubuntu_arm_flex_image_ocid = ''
 $ssh_public_key = ''
+$ssh_key_basename = 'id_ed25519'
 $auth_method = 'security_token'
 
 # Existing resource tracking (populated by inventory functions)
@@ -105,6 +112,13 @@ $EXISTING_AMD_INSTANCES = @{}
 $EXISTING_ARM_INSTANCES = @{}
 $EXISTING_BOOT_VOLUMES = @{}
 $EXISTING_BLOCK_VOLUMES = @{}
+$EXISTING_NON_FREE_SHAPE_NAMES = @()
+
+# Strict limit enforcement (internal; set by Resolve-EnforceLimitsMode)
+$script:STRICT_LIMITS_ACTIVE = $false
+$ENFORCE_LIMITS = if ($env:ENFORCE_LIMITS) { $env:ENFORCE_LIMITS } else { 'auto' }
+$AUTO_RESIZE_LEGACY_ARM = if ($env:AUTO_RESIZE_LEGACY_ARM) { $env:AUTO_RESIZE_LEGACY_ARM } else { 'auto' }
+$RESIZE_LEGACY_ARM_ONLY = if ($env:RESIZE_LEGACY_ARM_ONLY) { $env:RESIZE_LEGACY_ARM_ONLY } else { 'false' }
 
 # Instance configuration
 $amd_micro_instance_count = 0
@@ -1043,6 +1057,315 @@ function install_oci_cli {
     }
 }
 
+function Get-CloudbooterPython {
+    $venvPy = Join-Path $PWD '.venv' 'Scripts' 'python.exe'
+    if ($IsLinux -or $IsMacOS) {
+        $venvPy = Join-Path $PWD '.venv' 'bin' 'python'
+    }
+    if (Test-Path $venvPy) { return $venvPy }
+    foreach ($candidate in @('python3', 'python')) {
+        if (command_exists $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Ensure-CloudbooterPackage {
+    $py = Get-CloudbooterPython
+    if (-not $py) { return $false }
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
+
+    & $py -c "import cloudbooter" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return $true }
+
+    print_debug "Installing cloudbooter package (editable)..."
+    & $py -m pip install -e $scriptDir --quiet 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Detect-SubscriptionPlanType {
+    $homeRegion = $null
+    $homeQuery = 'data[?"is-home-region"==`true`]."region-name" | [0]'
+    try {
+        $homeRegion = oci_cmd "iam region-subscription list --tenancy-id $script:tenancy_ocid --query '$homeQuery' --raw-output"
+    }
+    catch { }
+    if ([string]::IsNullOrWhiteSpace($homeRegion) -or $homeRegion -eq 'null') {
+        $homeRegion = if ($OCI_AUTH_REGION) { $OCI_AUTH_REGION } else { $script:region }
+    }
+
+    $planQuery = 'data[0]."plan-type"'
+    try {
+        $planType = oci_cmd "osp-gateway subscription-service subscription list --compartment-id $script:tenancy_ocid --osp-home-region $homeRegion --query '$planQuery' --raw-output"
+        if (-not [string]::IsNullOrWhiteSpace($planType) -and $planType -ne 'null') {
+            return $planType
+        }
+    }
+    catch { }
+    return 'unknown'
+}
+
+function Resolve-EnforceLimitsMode {
+    $planType = Detect-SubscriptionPlanType
+    print_debug "Subscription plan_type: $planType"
+
+    Ensure-CloudbooterPackage | Out-Null
+    $py = Get-CloudbooterPython
+    if (-not $py) {
+        $script:STRICT_LIMITS_ACTIVE = $false
+        return
+    }
+
+    $active = & $py -m cloudbooter.cli resolve-enforce --plan-type $planType --env-value $ENFORCE_LIMITS 2>$null
+    $script:STRICT_LIMITS_ACTIVE = ($active -eq 'true')
+    print_debug "STRICT_LIMITS_ACTIVE=$($script:STRICT_LIMITS_ACTIVE)"
+}
+
+function Build-InventoryJson {
+    $totalBoot = 0
+    $totalBlock = 0
+    foreach ($bootData in $script:EXISTING_BOOT_VOLUMES.Values) {
+        $size = [int](($bootData -split '\|')[1])
+        $totalBoot += $size
+    }
+    foreach ($blockData in $script:EXISTING_BLOCK_VOLUMES.Values) {
+        $size = [int](($blockData -split '\|')[1])
+        $totalBlock += $size
+    }
+
+    $armList = @()
+    foreach ($entry in $script:EXISTING_ARM_INSTANCES.GetEnumerator()) {
+        $parts = $entry.Value -split '\|'
+        $armList += @{
+            id        = $entry.Key
+            name      = $parts[0]
+            ocpus     = [int][double]$parts[5]
+            memory_gb = [int][double]$parts[6]
+            shape     = $parts[2]
+        }
+    }
+
+    $payload = @{
+        amd_instances      = $script:EXISTING_AMD_INSTANCES.Count
+        arm_instances      = $armList
+        boot_storage_gb    = $totalBoot
+        block_storage_gb   = $totalBlock
+        block_volume_count = $script:EXISTING_BLOCK_VOLUMES.Count
+        vcn_count          = $script:EXISTING_VCNS.Count
+        non_free_shapes    = @($script:EXISTING_NON_FREE_SHAPE_NAMES)
+    }
+    return ($payload | ConvertTo-Json -Depth 5 -Compress)
+}
+
+function Invoke-UsageReview {
+    if (-not (Ensure-CloudbooterPackage)) { return }
+    $py = Get-CloudbooterPython
+    if (-not $py) { return }
+
+    $payload = Build-InventoryJson
+    $findings = $payload | & $py -m cloudbooter.cli audit --stdin-json 2>$null
+    if ([string]::IsNullOrWhiteSpace($findings)) { return }
+
+    Write-Host ""
+    print_header "USAGE REVIEW"
+    print_status "Existing resources outside the recommended billing-safe profile:"
+    foreach ($line in ($findings -split "`n")) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            print_warning "  $line"
+        }
+    }
+    print_status "These existing resources do not block apply when the proposed configuration is billing-safe."
+    print_status "See docs/FREE_TIER_LIMITS.md to reduce usage toward `$0 forecast."
+    Write-Host ""
+    Invoke-MaybeAutoResizeLegacyArm
+}
+
+function Test-GateProposedConfig {
+    if (-not $script:STRICT_LIMITS_ACTIVE) { return $true }
+    if (-not (Ensure-CloudbooterPackage)) {
+        print_error "Cannot validate configuration (cloudbooter unavailable)"
+        return $false
+    }
+
+    $py = Get-CloudbooterPython
+    $totalOcpus = 0
+    $totalMemory = 0
+    foreach ($o in ($script:arm_flex_ocpus_per_instance -split '\s+')) {
+        if ($o) { $totalOcpus += [int]$o }
+    }
+    foreach ($m in ($script:arm_flex_memory_per_instance -split '\s+')) {
+        if ($m) { $totalMemory += [int]$m }
+    }
+
+    $totalBoot = $script:amd_micro_instance_count * $script:amd_micro_boot_volume_size_gb
+    foreach ($b in ($script:arm_flex_boot_volume_size_gb -split '\s+')) {
+        if ($b) { $totalBoot += [int]$b }
+    }
+    $blockSum = 0
+    foreach ($bv in $script:arm_flex_block_volumes) {
+        $blockSum += [int]$bv
+    }
+
+    $validatePayload = @{
+        amd_instances        = $script:amd_micro_instance_count
+        arm_instances        = $script:arm_flex_instance_count
+        arm_ocpus_total      = $totalOcpus
+        arm_memory_gb_total  = $totalMemory
+        total_storage_gb     = $totalBoot + $blockSum
+        block_storage_gb     = $blockSum
+        billing_safe         = $true
+    } | ConvertTo-Json -Compress
+
+    $validatePayload | & $py -m cloudbooter.cli validate --stdin-json 2>&1 | ForEach-Object { print_error $_ }
+    if ($LASTEXITCODE -ne 0) {
+        print_error "Proposed configuration is not billing-safe under current limits."
+        print_status "See docs/FREE_TIER_LIMITS.md for remediation."
+        return $false
+    }
+    return $true
+}
+
+function Get-LegacyArmInstanceCount {
+    $count = 0
+    foreach ($instData in $script:EXISTING_ARM_INSTANCES.Values) {
+        $parts = $instData -split '\|'
+        $ocpus = [int][double]$parts[5]
+        $memory = [int][double]$parts[6]
+        if ($ocpus -gt $FREE_TIER_MAX_ARM_OCPUS -or $memory -gt $FREE_TIER_MAX_ARM_MEMORY_GB) {
+            $count++
+        }
+    }
+    return $count
+}
+
+function Test-ShouldAutoResizeLegacyArm {
+    if ($RESIZE_LEGACY_ARM_ONLY -eq 'true') { return $true }
+    Ensure-CloudbooterPackage | Out-Null
+    $py = Get-CloudbooterPython
+    if (-not $py) {
+        switch ($AUTO_RESIZE_LEGACY_ARM.ToLowerInvariant()) {
+            { $_ -in @('true', 'yes', '1') } { return $true }
+            { $_ -in @('false', 'no', '0') } { return $false }
+            default { return ($env:NON_INTERACTIVE -eq 'true') }
+        }
+    }
+    $cliArgs = @(
+        '-m', 'cloudbooter.cli', 'should-auto-resize',
+        '--env-value', $AUTO_RESIZE_LEGACY_ARM
+    )
+    if ($env:NON_INTERACTIVE -eq 'true') { $cliArgs += '--non-interactive' }
+    if ($RESIZE_LEGACY_ARM_ONLY -eq 'true') { $cliArgs += '--resize-only' }
+    $active = & $py @cliArgs 2>$null
+    return ($active -eq 'true')
+}
+
+function Wait-ForInstanceState {
+    param(
+        [string]$InstanceId,
+        [string]$DesiredState = 'RUNNING',
+        [int]$TimeoutSec = 600
+    )
+    $elapsed = 0
+    $interval = 15
+    while ($elapsed -lt $TimeoutSec) {
+        try {
+            $state = oci_cmd "compute instance get --instance-id $InstanceId --query 'data.\"lifecycle-state\"' --raw-output"
+            if ($state -eq $DesiredState) { return $true }
+            print_debug "  Waiting for $InstanceId (state=$state)..."
+        }
+        catch { }
+        Start-Sleep -Seconds $interval
+        $elapsed += $interval
+    }
+    return $false
+}
+
+function Resize-ArmInstanceToBillingSafe {
+    param([string]$InstanceId, [string]$DisplayName)
+
+    $shapeCfg = @{
+        ocpus        = $FREE_TIER_DEFAULT_ARM_OCPUS
+        memoryInGBs  = $FREE_TIER_DEFAULT_ARM_MEMORY_GB
+    } | ConvertTo-Json -Compress
+    $cfgFile = Join-Path $env:TEMP "oci-shape-config-$([Guid]::NewGuid().ToString()).json"
+    Set-Content -Path $cfgFile -Value $shapeCfg -Encoding UTF8
+
+    print_status "Resizing ${DisplayName} to $FREE_TIER_DEFAULT_ARM_OCPUS OCPU / $FREE_TIER_DEFAULT_ARM_MEMORY_GB GB (reboot expected)..."
+    try {
+        oci_cmd "compute instance update --instance-id $InstanceId --shape-config file://$cfgFile --force" | Out-Null
+    }
+    catch {
+        print_error "Failed to resize ${DisplayName} ($InstanceId)"
+        Remove-Item $cfgFile -ErrorAction SilentlyContinue
+        return $false
+    }
+    Remove-Item $cfgFile -ErrorAction SilentlyContinue
+
+    if (Wait-ForInstanceState -InstanceId $InstanceId) {
+        print_success "Resized ${DisplayName} — instance is RUNNING"
+    }
+    else {
+        print_warning "Resize submitted for ${DisplayName}; instance not RUNNING yet (check OCI Console)"
+    }
+    return $true
+}
+
+function Resize-LegacyArmInstances {
+    $legacyCount = Get-LegacyArmInstanceCount
+    if ($legacyCount -eq 0) {
+        print_status "No legacy ARM instances need resizing"
+        return 0
+    }
+
+    print_header "RESIZE LEGACY ARM INSTANCES"
+    print_status "Downsizing $legacyCount instance(s) to $FREE_TIER_DEFAULT_ARM_OCPUS OCPU / $FREE_TIER_DEFAULT_ARM_MEMORY_GB GB..."
+
+    $resized = 0
+    $failed = 0
+    foreach ($entry in $script:EXISTING_ARM_INSTANCES.GetEnumerator()) {
+        $id = $entry.Key
+        $parts = $entry.Value -split '\|'
+        $name = $parts[0]
+        $ocpus = [int][double]$parts[5]
+        $memory = [int][double]$parts[6]
+        if ($ocpus -le $FREE_TIER_MAX_ARM_OCPUS -and $memory -le $FREE_TIER_MAX_ARM_MEMORY_GB) {
+            continue
+        }
+        if (Resize-ArmInstanceToBillingSafe -InstanceId $id -DisplayName $name) {
+            $resized++
+            $script:EXISTING_ARM_INSTANCES[$id] = "$name|RUNNING|$FREE_TIER_ARM_SHAPE|none|none|$FREE_TIER_DEFAULT_ARM_OCPUS|$FREE_TIER_DEFAULT_ARM_MEMORY_GB"
+        }
+        else {
+            $failed++
+        }
+    }
+
+    Write-Host ""
+    print_success "Resize complete: $resized succeeded, $failed failed"
+    calculate_available_resources
+    return $failed
+}
+
+function Invoke-MaybeAutoResizeLegacyArm {
+    if ($RESIZE_LEGACY_ARM_ONLY -eq 'true') { return }
+
+    $legacyCount = Get-LegacyArmInstanceCount
+    if ($legacyCount -eq 0) { return }
+
+    if (Test-ShouldAutoResizeLegacyArm) {
+        Resize-LegacyArmInstances | Out-Null
+        return
+    }
+
+    if ($env:NON_INTERACTIVE -eq 'true') { return }
+
+    if (confirm_action "Resize $legacyCount legacy ARM instance(s) to 2/12 now?" 'N') {
+        Resize-LegacyArmInstances | Out-Null
+    }
+    else {
+        print_status "Set AUTO_RESIZE_LEGACY_ARM=true or `$env:RESIZE_LEGACY_ARM_ONLY='true'"
+    }
+}
+
 function install_terraform {
     print_subheader "Terraform Setup"
     
@@ -1726,10 +2049,20 @@ function fetch_availability_domains {
     print_success "Availability domain: $script:availability_domain"
 }
 
+function Select-UbuntuImageOcid {
+    param([string]$ImagesJson)
+    $preferred = safe_jq $ImagesJson '.data[] | select(.["display-name"] | test("24\\.04")) | .id' ''
+    if ($preferred -and $preferred -ne 'null') {
+        if ($preferred -match '\s') { return ($preferred -split '\s+')[0] }
+        return $preferred
+    }
+    return (safe_jq $ImagesJson '.data.[0].id' '')
+}
+
 function fetch_ubuntu_images {
     print_status "Fetching Ubuntu images for region $script:region..."
     
-    # Fetch x86 (AMD64) Ubuntu image
+    # Fetch x86 (AMD64) Ubuntu image — prefer 24.04 LTS
     print_status "  Looking for x86 Ubuntu image..."
     try {
         $x86_images = oci_cmd "compute image list --compartment-id $script:tenancy_ocid --operating-system 'Canonical Ubuntu' --shape '$FREE_TIER_AMD_SHAPE' --sort-by TIMECREATED --sort-order DESC --all"
@@ -1738,8 +2071,11 @@ function fetch_ubuntu_images {
         $x86_images = '{"data":[]}'
     }
     
-    $script:ubuntu_image_ocid = safe_jq $x86_images '.data.[0].id' ''
-    $x86_name = safe_jq $x86_images '.data.[0].display-name' ''
+    $script:ubuntu_image_ocid = Select-UbuntuImageOcid $x86_images
+    $x86_name = safe_jq $x86_images ".data[] | select(.id == `"$($script:ubuntu_image_ocid)`") | .[\"display-name\"]" ''
+    if ([string]::IsNullOrWhiteSpace($x86_name)) {
+        $x86_name = safe_jq $x86_images '.data.[0].display-name' ''
+    }
     
     if ($script:ubuntu_image_ocid -and $script:ubuntu_image_ocid -ne 'null') {
         print_success "  x86 image: $x86_name"
@@ -1750,7 +2086,7 @@ function fetch_ubuntu_images {
         $script:ubuntu_image_ocid = ''
     }
     
-    # Fetch ARM Ubuntu image
+    # Fetch ARM Ubuntu image — prefer 24.04 LTS
     print_status "  Looking for ARM Ubuntu image..."
     try {
         $arm_images = oci_cmd "compute image list --compartment-id $script:tenancy_ocid --operating-system 'Canonical Ubuntu' --shape '$FREE_TIER_ARM_SHAPE' --sort-by TIMECREATED --sort-order DESC --all"
@@ -1759,8 +2095,11 @@ function fetch_ubuntu_images {
         $arm_images = '{"data":[]}'
     }
     
-    $script:ubuntu_arm_flex_image_ocid = safe_jq $arm_images '.data.[0].id' ''
-    $arm_name = safe_jq $arm_images '.data.[0].display-name' ''
+    $script:ubuntu_arm_flex_image_ocid = Select-UbuntuImageOcid $arm_images
+    $arm_name = safe_jq $arm_images ".data[] | select(.id == `"$($script:ubuntu_arm_flex_image_ocid)`") | .[\"display-name\"]" ''
+    if ([string]::IsNullOrWhiteSpace($arm_name)) {
+        $arm_name = safe_jq $arm_images '.data.[0].display-name' ''
+    }
     
     if ($script:ubuntu_arm_flex_image_ocid -and $script:ubuntu_arm_flex_image_ocid -ne 'null') {
         print_success "  ARM image: $arm_name"
@@ -1778,19 +2117,29 @@ function generate_ssh_keys {
     $ssh_dir = 'ssh_keys'
     New-Item -ItemType Directory -Path $ssh_dir -Force | Out-Null
     
-    $keyPath = Join-Path $ssh_dir 'id_rsa'
-    $pubPath = Join-Path $ssh_dir 'id_rsa.pub'
+    $ed25519Path = Join-Path $ssh_dir 'id_ed25519'
+    $ed25519Pub = Join-Path $ssh_dir 'id_ed25519.pub'
+    $rsaPath = Join-Path $ssh_dir 'id_rsa'
+    $rsaPub = Join-Path $ssh_dir 'id_rsa.pub'
     
-    if (!(Test-Path $keyPath)) {
-        print_status "Generating new SSH key pair..."
-        & ssh-keygen -t rsa -b 4096 -f $keyPath -N '' -q
-        print_success "SSH key pair generated at $ssh_dir/"
+    if (Test-Path $ed25519Path) {
+        $script:ssh_key_basename = 'id_ed25519'
+        $pubPath = $ed25519Pub
+        print_status "Using existing ed25519 SSH key pair at $ssh_dir/"
+    }
+    elseif (Test-Path $rsaPath) {
+        $script:ssh_key_basename = 'id_rsa'
+        $pubPath = $rsaPub
+        print_status "Using existing RSA SSH key pair at $ssh_dir/"
     }
     else {
-        print_status "Using existing SSH key pair at $ssh_dir/"
+        print_status "Generating new ed25519 SSH key pair..."
+        & ssh-keygen -t ed25519 -f $ed25519Path -N '' -q
+        $script:ssh_key_basename = 'id_ed25519'
+        $pubPath = $ed25519Pub
+        print_success "SSH key pair generated at $ssh_dir/"
     }
     
-    # exported for Terraform/template consumption
     $script:ssh_public_key = Get-Content $pubPath -Raw
 }
 
@@ -1809,6 +2158,7 @@ function inventory_all_resources {
     inventory_storage_resources
     
     display_resource_inventory
+    Invoke-UsageReview
 }
 
 function inventory_compute_instances {
@@ -1903,9 +2253,15 @@ function inventory_compute_instances {
             
             $script:EXISTING_ARM_INSTANCES[$id] = "$name|$state|$shape|$public_ip|$private_ip|$ocpus|$memory"
             print_status "  Found ARM instance: $name ($state, ${ocpus}OCPUs, ${memory}GB) - IP: $public_ip"
+            $ocpuVal = [int][double]$ocpus
+            $memVal = [int][double]$memory
+            if ($ocpuVal -gt $FREE_TIER_MAX_ARM_OCPUS -or $memVal -gt $FREE_TIER_MAX_ARM_MEMORY_GB) {
+                print_warning "  Legacy ARM sizing detected ($ocpus OCPU / $memory GB). Resize to $FREE_TIER_MAX_ARM_OCPUS/$FREE_TIER_MAX_ARM_MEMORY_GB before PAYG upgrade."
+            }
         }
         else {
             print_debug "  Found non-free-tier instance: $name ($shape)"
+            $script:EXISTING_NON_FREE_SHAPE_NAMES += $shape
         }
     }
     
@@ -2515,18 +2871,29 @@ function show_compact_status {
 # ── Auto-configuration: loads config without prompts ──
 
 function apply_default_config {
+    configure_recommended_billing_safe
+}
+
+function configure_recommended_billing_safe {
     $script:amd_micro_instance_count = 0
     $script:amd_micro_boot_volume_size_gb = 50
     $script:amd_micro_hostnames = @()
     $script:arm_flex_instance_count = 1
-    $script:arm_flex_ocpus_per_instance = '4'
-    $script:arm_flex_memory_per_instance = '24'
-    $script:arm_flex_boot_volume_size_gb = '200'
+    $script:arm_flex_ocpus_per_instance = "$FREE_TIER_DEFAULT_ARM_OCPUS"
+    $script:arm_flex_memory_per_instance = "$FREE_TIER_DEFAULT_ARM_MEMORY_GB"
+    $script:arm_flex_boot_volume_size_gb = "$FREE_TIER_DEFAULT_BOOT_VOLUME_GB"
     $script:arm_flex_hostnames = @('arm-instance-1')
     $script:arm_flex_block_volumes = @(0)
     $script:TUI_CONFIGURED = $true
     $script:TUI_TERRAFORM_FILES_READY = $false
-    print_status "Default config: 1x ARM (4 OCPU, 24GB RAM, 200GB boot)"
+    print_status "Recommended config: 1x ARM ($FREE_TIER_DEFAULT_ARM_OCPUS OCPU, ${FREE_TIER_DEFAULT_ARM_MEMORY_GB}GB RAM, ${FREE_TIER_DEFAULT_BOOT_VOLUME_GB}GB boot @ ${FREE_TIER_BOOT_VOLUME_VPU} VPU)"
+}
+
+function Confirm-MaximumFreeTier {
+    print_warning "Maximum Free Tier may provision multiple instances and split storage."
+    print_warning "On PAYG accounts, resources outside Always Free limits incur charges."
+    print_warning "Recommended: use billing-safe defaults unless you understand the limits."
+    return (confirm_action '  Continue with Maximum Free Tier?' 'N')
 }
 
 function auto_configure_if_needed {
@@ -2600,6 +2967,12 @@ function terraform_init_and_plan {
     if ($LASTEXITCODE -ne 0) { throw 'terraform validate failed' }
     print_success "Valid"
 
+    if ($script:STRICT_LIMITS_ACTIVE) {
+        print_status "Validating billing-safe proposed configuration..."
+        if (-not (Test-GateProposedConfig)) { throw 'proposed configuration is not billing-safe' }
+        print_success "Proposed configuration is billing-safe"
+    }
+
     print_status "Planning..."
     Remove-Item tfplan -ErrorAction SilentlyContinue
     & terraform plan -out=tfplan
@@ -2622,10 +2995,10 @@ function edit_configuration {
     Write-Host "  $($BOLD)Free Tier available:$($NC) AMD=$script:AVAILABLE_AMD_INSTANCES, ARM OCPU=$script:AVAILABLE_ARM_OCPUS, Memory=$($script:AVAILABLE_ARM_MEMORY)GB, Storage=$($script:AVAILABLE_STORAGE)GB"
     Write-Host ""
     Write-Host "  1) Custom          interactive prompts for each instance"
-    Write-Host "  2) Max Free Tier   use all available resources"
+    Write-Host "  2) Max Free Tier   use all available resources (PAYG billing risk)"
     Write-Host "  3) Sync deployed   match what is currently running"
     Write-Host "  4) Load saved      reload from variables.tf"
-    Write-Host "  5) Reset defaults  1x ARM, 4 OCPU, 24GB RAM, 200GB boot"
+    Write-Host "  5) Recommended     1x A1 billing-safe (2 OCPU, 12GB, 200GB boot)"
     Write-Host "  0) Cancel"
     Write-Host ""
 
@@ -2634,14 +3007,32 @@ function edit_configuration {
         m = 2; max = 2
         s = 3; sync = 3
         l = 4; load = 4
-        d = 5; defaults = 5; reset = 5
+        d = 5; defaults = 5; reset = 5; r = 5; recommended = 5
         b = 0; cancel = 0; q = 0
     }
 
     switch ($choice) {
         0 { return }
-        1 { configure_custom_instances }
-        2 { configure_maximum_free_tier }
+        1 {
+            configure_custom_instances
+            if ($script:STRICT_LIMITS_ACTIVE -and -not (Test-GateProposedConfig)) {
+                pause_tui
+                return
+            }
+        }
+        2 {
+            if ($script:STRICT_LIMITS_ACTIVE) {
+                print_warning "Maximum Free Tier is not available under current billing-safe limits."
+                print_warning "On PAYG accounts, resources outside Always Free limits incur charges."
+                pause_tui
+                return
+            }
+            if (-not (Confirm-MaximumFreeTier)) {
+                pause_tui
+                return
+            }
+            configure_maximum_free_tier
+        }
         3 { configure_from_existing_instances }
         4 {
             if (-not (load_existing_config)) {
@@ -2651,7 +3042,7 @@ function edit_configuration {
             }
             print_success "Config loaded from variables.tf"
         }
-        5 { apply_default_config }
+        5 { configure_recommended_billing_safe }
     }
 
     $script:TUI_CONFIGURED = $true
@@ -2718,41 +3109,9 @@ function configure_from_existing_instances {
     
     # Set defaults if no instances exist
     if ($script:amd_micro_instance_count -eq 0 -and $script:arm_flex_instance_count -eq 0) {
-        print_status "No existing instances found, using default configuration"
-
-        $armImageAvailable = -not [string]::IsNullOrWhiteSpace($script:ubuntu_arm_flex_image_ocid)
-        $amdImageAvailable = -not [string]::IsNullOrWhiteSpace($script:ubuntu_image_ocid)
-
-        if ($armImageAvailable -and $script:AVAILABLE_ARM_OCPUS -gt 0) {
-            $script:amd_micro_instance_count = 0
-            $script:arm_flex_instance_count = 1
-            $script:arm_flex_ocpus_per_instance = '4'
-            $script:arm_flex_memory_per_instance = '24'
-            $script:arm_flex_boot_volume_size_gb = '200'
-            $script:arm_flex_hostnames = @('arm-instance-1')
-            $script:arm_flex_block_volumes = @(0)
-        }
-        elseif ($amdImageAvailable -and $script:AVAILABLE_AMD_INSTANCES -gt 0) {
-            $script:amd_micro_instance_count = 1
-            $script:amd_micro_hostnames = @('amd-instance-1')
-            $script:arm_flex_instance_count = 0
-            $script:arm_flex_ocpus_per_instance = ''
-            $script:arm_flex_memory_per_instance = ''
-            $script:arm_flex_boot_volume_size_gb = ''
-            $script:arm_flex_hostnames = @()
-            $script:arm_flex_block_volumes = @()
-        }
-        else {
-            print_warning "No eligible Ubuntu image found for AMD or ARM. Skipping compute instance creation."
-            $script:amd_micro_instance_count = 0
-            $script:amd_micro_hostnames = @()
-            $script:arm_flex_instance_count = 0
-            $script:arm_flex_ocpus_per_instance = ''
-            $script:arm_flex_memory_per_instance = ''
-            $script:arm_flex_boot_volume_size_gb = ''
-            $script:arm_flex_hostnames = @()
-            $script:arm_flex_block_volumes = @()
-        }
+        print_status "No existing instances found, using recommended billing-safe defaults"
+        configure_recommended_billing_safe
+        return
     }
     
     $script:amd_micro_boot_volume_size_gb = 50
@@ -2784,7 +3143,7 @@ function configure_custom_instances {
     
     # ARM instances
     if ($script:ubuntu_arm_flex_image_ocid -and $script:AVAILABLE_ARM_OCPUS -gt 0) {
-        $script:arm_flex_instance_count = prompt_int_range "Number of ARM instances (0-4)" "1" 0 4
+        $script:arm_flex_instance_count = prompt_int_range "Number of ARM instances (0-$FREE_TIER_MAX_ARM_INSTANCES)" "1" 0 $FREE_TIER_MAX_ARM_INSTANCES
         
         $script:arm_flex_hostnames = @()
         $script:arm_flex_ocpus_per_instance = ''
@@ -3000,9 +3359,9 @@ locals {
     ubuntu_arm_image_ocid = "__UBUNTU_ARM_IMAGE_OCID__"
   
     # SSH Configuration
-    ssh_pubkey_path      = pathexpand("./ssh_keys/id_rsa.pub")
-    ssh_pubkey_data      = file(pathexpand("./ssh_keys/id_rsa.pub"))
-    ssh_private_key_path = pathexpand("./ssh_keys/id_rsa")
+    ssh_pubkey_path      = pathexpand("./ssh_keys/__SSH_KEY_BASENAME__.pub")
+    ssh_pubkey_data      = file(pathexpand("./ssh_keys/__SSH_KEY_BASENAME__.pub"))
+    ssh_private_key_path = pathexpand("./ssh_keys/__SSH_KEY_BASENAME__")
   
     # AMD x86 Micro Instances Configuration
     amd_micro_instance_count      = __AMD_COUNT__
@@ -3083,6 +3442,7 @@ check "arm_memory_limit" {
     $variablesContent = $variablesContent.Replace('__ARM_HOSTNAMES__', $arm_hostnames_tf)
     $variablesContent = $variablesContent.Replace('__ARM_BLOCK__', $arm_block_tf)
     $variablesContent = $variablesContent.Replace('__MAX_STORAGE__', $FREE_TIER_MAX_STORAGE_GB)
+    $variablesContent = $variablesContent.Replace('__SSH_KEY_BASENAME__', $script:ssh_key_basename)
     $variablesContent = $variablesContent.Replace('__MAX_ARM_OCPUS__', $FREE_TIER_MAX_ARM_OCPUS)
     $variablesContent = $variablesContent.Replace('__MAX_ARM_MEMORY__', $FREE_TIER_MAX_ARM_MEMORY_GB)
     Set-Content -Path 'variables.tf' -Value $variablesContent
@@ -3348,6 +3708,7 @@ resource "oci_core_instance" "arm" {
     source_type             = "image"
     source_id               = local.ubuntu_arm_image_ocid
     boot_volume_size_in_gbs = local.arm_flex_boot_volume_size_gb[count.index]
+    boot_volume_vpus_per_gb = __BOOT_VOLUME_VPU__
   }
   
   metadata = {
@@ -3427,7 +3788,7 @@ output "amd_instances" {
       private_ip = oci_core_instance.amd[i].private_ip
       ipv6       = oci_core_ipv6.amd_ipv6[i].ip_address
       state      = oci_core_instance.amd[i].state
-      ssh        = "ssh -i ./ssh_keys/id_rsa ubuntu@${oci_core_instance.amd[i].public_ip}"
+      ssh        = "ssh -i ./ssh_keys/__SSH_KEY_BASENAME__ ubuntu@${oci_core_instance.amd[i].public_ip}"
     }
   } : {}
 }
@@ -3443,7 +3804,7 @@ output "arm_instances" {
       state      = oci_core_instance.arm[i].state
       ocpus      = local.arm_flex_ocpus_per_instance[i]
       memory_gb  = local.arm_flex_memory_per_instance[i]
-      ssh        = "ssh -i ./ssh_keys/id_rsa ubuntu@${oci_core_instance.arm[i].public_ip}"
+      ssh        = "ssh -i ./ssh_keys/__SSH_KEY_BASENAME__ ubuntu@${oci_core_instance.arm[i].public_ip}"
     }
   } : {}
 }
@@ -3469,6 +3830,8 @@ output "summary" {
   }
 }
 '@
+    $mainContent = $mainContent.Replace('__SSH_KEY_BASENAME__', $script:ssh_key_basename)
+    $mainContent = $mainContent.Replace('__BOOT_VOLUME_VPU__', "$FREE_TIER_BOOT_VOLUME_VPU")
     Set-Content -Path 'main.tf' -Value $mainContent
     
     print_success "main.tf created"
@@ -3935,6 +4298,7 @@ function refresh_discovery_context {
     print_subheader "Discovery & Inventory"
     invoke_tui_phase "Refreshing OCI discovery context" {
         fetch_oci_config_values
+        Resolve-EnforceLimitsMode
         fetch_availability_domains
         fetch_ubuntu_images
         generate_ssh_keys
@@ -3967,6 +4331,12 @@ function run_terraform_workflow {
     & terraform validate 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'terraform validate failed' }
     print_success "Valid"
+
+    if ($script:STRICT_LIMITS_ACTIVE) {
+        print_status "Validating billing-safe proposed configuration..."
+        if (-not (Test-GateProposedConfig)) { throw 'proposed configuration is not billing-safe' }
+        print_success "Proposed configuration is billing-safe"
+    }
 
     # Plan
     print_status "Planning..."
@@ -4001,6 +4371,12 @@ function run_terraform_workflow {
 function main {
     initialize_log_catalog
     clear_tui_screen
+
+    if ($RESIZE_LEGACY_ARM_ONLY -eq 'true') {
+        bootstrap_tui_runtime
+        refresh_discovery_context
+        exit (Resize-LegacyArmInstances)
+    }
 
     # ── Quick pre-flight: detect tools + auth + load config (no prompts) ──
     if ((command_exists 'oci') -and (command_exists 'terraform') -and (Test-Path $OCI_CONFIG_FILE)) {
@@ -4043,15 +4419,16 @@ function main {
         Write-Host "  6) Import           import existing OCI resources to state"
         Write-Host "  7) Destroy          tear down all managed infrastructure"
         Write-Host "  8) Re-discover      re-scan OCI account for changes"
+        Write-Host "  9) Resize legacy ARM downsize over-cap A1 to 2/12"
         Write-Host "  0) Exit"
         Write-Host ""
         if ($TUI_SHOW_HINTS -eq 'true') {
-            Write-Host "  $($CYAN)Shortcuts: d=deploy, p=plan, e=edit, g=regen, s=state, i=import, r=refresh, q=exit, h=help$($NC)"
+            Write-Host "  $($CYAN)Shortcuts: d=deploy, p=plan, e=edit, g=regen, s=state, i=import, r=refresh, z=resize, q=exit, h=help$($NC)"
             Write-Host "  $($CYAN)Deploy/Plan auto-bootstraps and generates files if needed.$($NC)"
         }
         Write-Host ""
 
-        $choice = read_menu_choice "Choose" 0 8 $defaultOpt @{
+        $choice = read_menu_choice "Choose" 0 9 $defaultOpt @{
             d = 1; deploy = 1; apply = 1
             p = 2; plan = 2
             e = 3; edit = 3; config = 3; c = 3
@@ -4060,6 +4437,7 @@ function main {
             i = 6; import = 6
             x = 7; destroy = 7
             r = 8; refresh = 8; discover = 8; scan = 8
+            z = 9; resize = 9
             q = 0; quit = 0; exit = 0
         }
 
@@ -4167,6 +4545,16 @@ function main {
                 }
                 catch {
                     print_error "Discovery failed: $_"
+                }
+            }
+            9 {
+                try {
+                    bootstrap_tui_runtime
+                    if (-not $script:TUI_DISCOVERED) { refresh_discovery_context }
+                    Resize-LegacyArmInstances | Out-Null
+                }
+                catch {
+                    print_error "Resize failed: $_"
                 }
             }
             0 {

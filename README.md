@@ -4,7 +4,7 @@ CloudBooter is a terminal-first bootstrapper for cloud infrastructure.
 
 The goal is simple: give beginners a safe, repeatable “starting point” for a cloud account (network + compute + access) with sensible defaults, so they can learn by changing one thing at a time.
 
-This repository is intentionally multi-cloud in scope (AWS, Azure, GCP, OCI, and others). Today, only Oracle Cloud Infrastructure (OCI) is implemented. The provider roadmap is explicit in this README.
+This repository is intentionally multi-cloud in scope (AWS, Azure, GCP, OCI, and others). **OCI** is fully implemented (Bash + PowerShell). **GCP** has a parallel scaffold under `cloud/GCP/`. AWS and Azure remain planned.
 
 If you’ve ever opened a cloud console and thought “I don’t even know what I should click first,” CloudBooter is for you.
 
@@ -33,10 +33,10 @@ CloudBooter is designed as a multi-provider bootstrapper, but provider support r
 
 | Provider | Status | What you can do today |
 |---|---:|---|
-| OCI | Supported | Inventory, generate Terraform, optional auto-deploy; Bash and Python implementations |
+| OCI | Supported | Inventory, generate Terraform, optional auto-deploy; Bash and PowerShell |
+| GCP | In progress | Scaffold under `cloud/GCP/` (Python + Bash) |
 | AWS | Planned | VPC + subnet + security group + EC2 baseline |
 | Azure | Planned | Resource group + VNet + subnet + NSG + VM baseline |
-| GCP | Planned | Project bootstrap guidance + VPC + subnet + firewall + Compute Engine baseline |
 
 ---
 
@@ -83,10 +83,12 @@ The output Terraform is treated as a learning artifact as much as a deployment m
 
 ## Quick start (OCI)
 
-OCI lives under `cloud/OCI/`. That directory contains both:
+> **Always Free A1 reduced (June 2026):** `VM.Standard.A1.Flex` is now **2 OCPU / 12 GB** (was 4 / 24). Default bootstrap is billing-safe: 1× A1, 200 GB boot. See [cloud/OCI/docs/FREE_TIER_LIMITS.md](cloud/OCI/docs/FREE_TIER_LIMITS.md).
 
-- a mature Bash implementation (`setup_oci_terraform.sh`)
-- a Python implementation (`cloudbooter` package)
+OCI lives under `cloud/OCI/`:
+
+- Bash: `setup_oci_terraform.sh` (Linux/macOS/WSL)
+- PowerShell: `setup_oci_terraform.ps1` (Windows TUI)
 
 Pick one.
 
@@ -101,11 +103,10 @@ cd cloud/OCI
 
 This script is designed to be run repeatedly. It inventories resources before proposing changes and generates Terraform in the current directory.
 
-Useful environment variables (non-interactive automation):
+Useful environment variables (non-interactive billing-safe default):
 
 ```bash
 NON_INTERACTIVE=true \
-AUTO_USE_EXISTING=true \
 AUTO_DEPLOY=false \
 ./setup_oci_terraform.sh
 ```
@@ -119,21 +120,7 @@ cd cloud\OCI
 .\setup_oci_terraform.ps1
 ```
 
-### Option C: Python CLI (cross-platform)
-
-The Python package is in `cloud/OCI/`.
-
-```powershell
-cd cloud\OCI
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
-
-cloudbooter --help
-cloudbooter
-```
-
-By default the CLI writes Terraform into the current working directory. You can override with `--terraform-dir`.
+See [cloud/OCI/USAGE.md](cloud/OCI/USAGE.md) for environment variables and menu options.
 
 ---
 
@@ -188,12 +175,14 @@ From there, you can extend it into anything: private subnets, NAT, load balancer
 
 OCI is currently the reference implementation. It includes a conservative default plan and guardrails.
 
-At a high level, it bootstraps:
+At a high level, the default **Recommended (billing-safe)** profile bootstraps:
 
-- Networking primitives (VCN + subnet + internet gateway + route table + security list)
-- Compute instances (x86 and/or Arm shapes, depending on your choices)
-- Storage (boot volumes and optional attached block volumes)
+- Networking (VCN + subnet + internet gateway + route table + security list with SSH ingress)
+- **1× Arm A1** instance: **2 OCPU / 12 GB**, **200 GB boot @ 120 VPU**
+- ed25519 SSH keys in `./ssh_keys/`
 - Cloud-init for basic instance initialization
+
+Optional **Maximum Free Tier** mode provisions all available AMD + A1 resources (PAYG billing risk — see docs).
 
 The OCI implementation also contains retry logic for transient capacity failures that can happen during instance provisioning.
 
@@ -212,27 +201,13 @@ CloudBooter supports two styles of configuration:
 
 The Bash implementation supports common automation toggles:
 
-- `NON_INTERACTIVE=true` to avoid prompts
-- `AUTO_USE_EXISTING=true` to prefer existing discovered resources
-- `AUTO_DEPLOY=true` to automatically run Terraform after generation
-- `FORCE_REAUTH=true` to force a fresh login flow
-- `OCI_PROFILE=...` to choose a named OCI CLI profile
+- `NON_INTERACTIVE=true` — billing-safe defaults without prompts (option 4)
+- `AUTO_USE_EXISTING=true` — prefer existing discovered resources (option 1)
+- `AUTO_DEPLOY=true` — automatically run Terraform after generation
+- `OPEN_ALL_PORTS=true` — restore open-all security list (legacy behavior)
+- `EXTRA_INGRESS_PORTS=443,80` — add TCP ingress ports to default security list
 
-There are more provider-specific knobs documented in `cloud/OCI/USAGE.md`.
-
-### Python CLI configuration (OCI)
-
-The Python CLI is a single command with options (no subcommands yet). Common flags:
-
-- `--profile` and `--config-file` for local OCI CLI config selection
-- `--auth-mode` (`api_key`, `security_token`, `instance_principal`, `resource_principal`)
-- `--terraform-dir` to control where output files are written
-- `--non-interactive` for automation
-- `--auto-deploy` to run Terraform after generation
-
-Most options can also be set via environment variables (for example `OCI_PROFILE`, `OCI_CONFIG_FILE`, `OCI_AUTH_MODE`, `OCI_AUTH_REGION`).
-
----
+See [cloud/OCI/USAGE.md](cloud/OCI/USAGE.md) for the full environment variable list.
 
 ## What gets generated
 
@@ -364,13 +339,14 @@ This repo is organized by provider:
 │  ├─ OCI/
 │  │  ├─ setup_oci_terraform.sh
 │  │  ├─ setup_oci_terraform.ps1
-│  │  ├─ src/cloudbooter/            (Python CLI for OCI)
-│  │  ├─ tests/
-│  │  ├─ QUICKSTART.md
 │  │  ├─ USAGE.md
-│  │  └─ FREE_TIER_LIMITS.md         (OCI-specific reference)
-│  └─ <future providers>/
-└─ scripts/                          (repo-wide helpers)
+│  │  ├─ src/cloudbooter/            (free-tier constants)
+│  │  ├─ tests/
+│  │  └─ docs/
+│  │     ├─ QUICKSTART.md
+│  │     ├─ OVERVIEW.md
+│  │     └─ FREE_TIER_LIMITS.md
+│  ├─ GCP/                           (in progress)
 ```
 
 Each provider folder should be runnable on its own and contain its own docs.
@@ -381,10 +357,10 @@ Each provider folder should be runnable on its own and contain its own docs.
 
 If you’re using OCI, start here:
 
-- `cloud/OCI/USAGE.md` for command-line usage and environment variables
-- `cloud/OCI/QUICKSTART.md` for a step-by-step walkthrough
-- `cloud/OCI/FREE_TIER_LIMITS.md` for a provider-specific limits reference
-- `cloud/OCI/README.md` for the longer provider guide
+- `cloud/OCI/USAGE.md` — command-line usage and environment variables
+- `cloud/OCI/docs/QUICKSTART.md` — step-by-step console walkthrough
+- `cloud/OCI/docs/FREE_TIER_LIMITS.md` — limits, June 2026 disclaimer, PAYG safety
+- `cloud/OCI/README.md` — provider guide
 
 ---
 
@@ -412,15 +388,11 @@ Each provider will start with a conservative baseline and expand only after the 
 
 Provider implementations own their own dependencies.
 
-For OCI (Python):
+For OCI free-tier constant tests:
 
-```powershell
-cd cloud\OCI
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .[dev]
-
-pytest
+```bash
+cd cloud/OCI
+python -m pytest tests/
 ```
 
 ---

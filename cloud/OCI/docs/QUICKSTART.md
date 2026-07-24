@@ -1,52 +1,40 @@
-# Oracle Cloud Always Free Tier — Complete Guide
+# Oracle Cloud Always Free Tier — Quick Start
 
-This guide combines a **hands-on walkthrough** for creating Oracle Cloud instances with a **comprehensive explanation of limits, resources, and optimization tips** for the Oracle Cloud **Always Free** tier.
+Hands-on walkthrough for creating Oracle Cloud instances plus limits and optimization tips.
+
+> **Always Free A1 resources reduced (June 2026)**
+> Oracle updated the Always Free allowance for `VM.Standard.A1.Flex` to **2 OCPUs and 12 GB memory** (previously 4 / 24). Cost Estimator / Cost Analysis forecasts may lag. Verify at [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). See [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) for PAYG billing safety and resize guidance.
+>
+> **Billing safety (especially PAYG):** Free tier covers **200 GB total block storage** and your A1 OCPU/memory pool. Extra instances or volumes may incur charges on PAYG accounts.
 
 ---
 
-## Overview: What Is Oracle Cloud Always Free?
+## Overview
 
-Oracle Cloud Infrastructure (OCI) offers an **Always Free** tier that provides a set of resources **indefinitely**, as long as you stay within defined limits. These resources are separate from the 30-day $300 promotional trial and are available only in your **home region**.
+Oracle Cloud Infrastructure (OCI) **Always Free** resources are available **indefinitely** in your **home region** when you stay within limits. They are separate from the 30-day $300 trial.
 
-If you stay within caps, your resources do not expire.
-
-Oracle Cloud's Always Free tier provides substantial, permanently-available resources (for example, an Arm instance pool with up to 4 OCPUs and 24 GB RAM, and up to 200 GB of block storage). Enrollment requires a valid payment method for identity verification and resources are provisioned in your home region; availability and capacity may vary by region. For authoritative limits and automated provisioning guidance, see [docs/FREE_TIER.md](docs/FREE_TIER.md) and [implementations/bash/setup_oci_terraform.sh](implementations/bash/setup_oci_terraform.sh). To enroll, visit https://signup.oraclecloud.com.
+For authoritative limits and automated provisioning, see [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) and [`setup_oci_terraform.sh`](../setup_oci_terraform.sh).
 
 ---
 
 ## Free Tier Resource Limits (At a Glance)
 
 ### Compute
-You can create up to **4 total instances**:
 
-- **x86 (AMD)**
-  - Up to **2 VM.Standard.E2.1.Micro**
-  - Each: 1/8 OCPU (burstable), 1 GB RAM
-
-- **Arm (Ampere A1 Flex)**
-  - Total pool: **4 OCPUs + 24 GB RAM**
-  - Configurable across **up to 4 instances**
-  - Minimum boot volume: ~47–50 GB per instance
+- **AMD (x86):** up to **2** × `VM.Standard.E2.1.Micro` (1/8 OCPU, 1 GB RAM each)
+- **Arm (A1 Flex):** **2 OCPUs + 12 GB RAM** total — typically **1 instance at 2/12** (recommended) or 2 instances at 1/6 each
 
 ### Storage
-- **200 GB total** block + boot volume storage (combined)
-- **5 volume backups**
-- **20 GB Object / Archive storage** (post-trial)
-- **50,000 API requests/month**
 
-### Databases
-- **2 Autonomous Databases**
-  - 1 OCPU, 20 GB storage each
-- **1 NoSQL database** (3 tables)
-- **OR** **1 HeatWave MySQL instance**
+- **200 GB** block + boot combined
+- **5** volume backups
+- **20 GB** object/archive (post-trial)
 
 ### Networking
-- 1 Flexible Load Balancer (10 Mbps)
-- 1 Network Load Balancer
-- Up to 2 VCNs
-- 50 Site-to-Site VPN connections
-- **10 TB outbound data/month**
-- Outbound port 25 blocked by default
+
+- 1 Flexible LB (10 Mbps), 1 NLB, 2 VCNs, **10 TB** egress/month
+
+Full tables: [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md)
 
 ---
 
@@ -54,149 +42,74 @@ You can create up to **4 total instances**:
 
 ### 1. Create Your Account
 
-Sign up here:  
-https://signup.cloud.oracle.com/
+https://signup.cloud.oracle.com/ — valid credit/debit card required (no virtual/prepaid).
 
-You **must** use a real credit or debit card  
-> Virtual and prepaid cards are not accepted.
+### 2. Navigate to Compute → Instances → Create instance
 
----
+### 3. Image and Shape
 
-### 2. Log In
+- **Image:** Canonical **Ubuntu 24.04**
+- **Shape:** `VM.Standard.A1.Flex` — **2 OCPUs**, **12 GB** memory
 
-Log into your new Oracle Cloud account.
+![Shape selection reference](https://user-images.githubusercontent.com/7338312/144945509-1d6f269e-47c9-4749-9281-b93c947637a2.png)
 
-![SignIn](https://user-images.githubusercontent.com/7338312/113791051-60882600-9708-11eb-801e-3f0624aca2dc.png)
+### 4. Networking
 
----
+Create new VCN and public subnet (defaults are fine for a single VM).
 
-### 3. Navigate to Compute Instances
+### 5. SSH Keys
 
-1. Click the **hamburger menu** (top left)
-2. Go to **Compute → Instances**
-3. Click **Create instance**
-
-![image](https://user-images.githubusercontent.com/7338312/144918356-a91aa72c-2bf7-4964-bf35-e3032c4e00c2.png)
-![image](https://user-images.githubusercontent.com/7338312/144918469-c98f44dc-306e-440c-ab10-00c9b7ea62c1.png)
-
----
-
-### 4. Name & Region
-
-- Give your instance a name
-- Wait for the form to autofill
-- Ensure the region shows **“Always Free-eligible”**
-
-![image](https://user-images.githubusercontent.com/7338312/144918675-3e4fbce2-875e-4ac1-ae7a-d18d66fd2f4a.png)
-
----
-
-### 5. Choose Shape (CPU Type)
-
-Click **Edit → Change shape**
-
-#### x86 (AMD)
-Leave defaults and click **Select shape**
-
-![image](https://user-images.githubusercontent.com/7338312/144919139-0e53da3e-ccc2-4d5a-b42d-c3651fc056f0.png)
-
-#### Arm (Ampere A1)
-- Select **Ampere**
-- Check **VM.Standard.A1.Flex**
-- Allocate CPU/RAM using the sliders
-
-You have **4 cores + 24 GB RAM total** across Arm instances.
-
-![image](https://user-images.githubusercontent.com/7338312/144945509-1d6f269e-47c9-4749-9281-b93c947637a2.png)
-![image](https://user-images.githubusercontent.com/7338312/144945640-2809fc13-cc2b-4c36-b033-050da631ff02.png)
-
----
-
-### 6. Choose an Image (OS)
-
-Click **Change image**, then select your OS and version.
-
-![image](https://user-images.githubusercontent.com/7338312/144919299-d39c916b-94e5-4f1a-a25d-20ec6b4d257e.png)
-![image](https://user-images.githubusercontent.com/7338312/144919489-20ac31e0-bfe0-4788-a0f2-ff930468b7b0.png)
-
----
-
-### 7. Networking
-
-Defaults are usually fine. Adjust only if you know you need changes.
-
----
-
-### 8. SSH Keys
-
-- Choose **Paste public keys**
-- Paste your key from `~/.ssh/id_rsa.pub`
-- Or upload / generate one
-
-![image](https://user-images.githubusercontent.com/7338312/144919789-c456c22b-8943-4ad0-a784-b94ab084c022.png)
-
----
-
-### 9. Boot Volume
-
-- Default is ~50 GB (minimum)
-- Total free tier storage: **200 GB**
-- Adjust size if using fewer than 4 VMs
-
-![image](https://user-images.githubusercontent.com/7338312/144945033-f2d602b8-b7f9-438b-be66-3e9a04bbe56a.png)
-
----
-
-### 10. Deploy
-
-Click **Create** and wait for provisioning.
-
-![image](https://user-images.githubusercontent.com/7338312/144945150-7373060d-77d8-45a8-a456-4eb99463adcb.png)
-
-Once green, note the public IP and connect:
+Generate ed25519 keys (recommended):
 
 ```bash
-ssh ubuntu@<public-ip>
-````
+ssh-keygen -t ed25519 -C "your_email@example.com"
+```
 
-![done](https://user-images.githubusercontent.com/7338312/113791880-3d5e7600-970a-11eb-9e04-0ffefa5defbf.png)
+Upload `id_ed25519.pub`.
 
----
+### 6. Boot Volume
 
-For automated provisioning and to ensure free-tier limits are enforced when deploying, prefer the repository's provisioning scripts and Terraform templates: see [implementations/bash/setup_oci_terraform.sh](implementations/bash/setup_oci_terraform.sh).
+Enable **Specify a custom boot volume size and performance**:
 
-## Maximizing Value (Very Important)
+- Size: **200 GB**
+- Performance: **120 VPU**
 
-* Use **one Arm instance with all 4 OCPUs + 24 GB RAM** for best performance
-* Combine with **2 AMD micro instances** for small services
-* Attach extra block volumes to use all 200 GB
-* Keep instances **active**:
+### 7. Deploy and Connect
 
-  * Oracle may reclaim VMs if usage stays below ~20% for 7 days
-* Consider upgrading to **Pay As You Go** while staying in free limits:
+```bash
+ssh -i ~/.ssh/id_ed25519 ubuntu@<public-ip>
+```
 
-  * Better capacity availability
-  * Still $0 if you don’t exceed limits
+Open additional ports via the subnet security list (Networking tab → Subnet → Security rules).
 
 ---
 
-## Risks & Limitations
+## Automated Bootstrap (Recommended)
 
-* No SLA or guaranteed uptime
-* Capacity can be unavailable in some regions
-* Idle instances may be reclaimed
-* Always Free resources must stay in your **home region**
-* One account per person; violations may result in suspension
+```bash
+cd cloud/OCI
+./setup_oci_terraform.sh
+```
+
+Choose **option 4 — Recommended (billing-safe)** for 1× A1 (2/12), 200 GB boot @ 120 VPU.
+
+Non-interactive:
+
+```bash
+NON_INTERACTIVE=true AUTO_DEPLOY=true ./setup_oci_terraform.sh
+```
+
+---
+
+## Maximizing Value
+
+- **Default (billing-safe):** one A1 at full pool (2/12) with 200 GB boot — matches [viren070's guide](https://guides.viren070.me/selfhosting/oracle)
+- **Advanced:** script option 5 (Maximum Free Tier) uses all AMD + A1 slots — **PAYG billing risk**; read warnings in [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md)
+- Keep instances active to avoid idle reclamation (7-day window, <20% utilization)
+- PAYG upgrade improves capacity while staying $0 within Always Free limits — set a **$1 budget alert**
 
 ---
 
 ## Summary
 
-Oracle Cloud’s Always Free tier is unusually generous—especially the **4-core / 24-GB Arm instance**—and is excellent for:
-
-* Self-hosting
-* Learning cloud infrastructure
-* Development & testing
-* Lightweight production workloads
-
-Stay within limits, keep instances active, and it can run **forever at $0**.
+Oracle Always Free is excellent for self-hosting and homelabs. The current Arm allowance is **2 OCPU / 12 GB** with **200 GB** storage — stay within limits for indefinite $0 usage.

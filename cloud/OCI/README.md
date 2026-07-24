@@ -1,10 +1,12 @@
-# CloudCradle OCI Setup Scripts
+# CloudBooter OCI Setup Scripts
 
-CloudCradle provides automated Oracle Cloud Infrastructure (OCI) provisioning scripts in both **Bash** and **PowerShell** implementations. Both scripts offer feature parity and can deploy resources with consistent stable workflows.
+CloudBooter provides automated Oracle Cloud Infrastructure (OCI) provisioning scripts in both **Bash** and **PowerShell** implementations.
+
+> **Always Free A1 resources reduced (June 2026)** — `VM.Standard.A1.Flex` is now **2 OCPUs and 12 GB memory** (was 4 / 24). Default bootstrap profile is billing-safe: 1× A1, 200 GB boot. Details: [docs/FREE_TIER_LIMITS.md](docs/FREE_TIER_LIMITS.md).
 
 ## Table of Contents
 
-- [CloudCradle OCI Setup Scripts](#cloudcradle-oci-setup-scripts)
+- [CloudBooter OCI Setup Scripts](#cloudbooter-oci-setup-scripts)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Quick Start by Operating System](#quick-start-by-operating-system)
@@ -32,9 +34,10 @@ CloudCradle provides automated Oracle Cloud Infrastructure (OCI) provisioning sc
 
 ## Overview
 
-CloudCradle automates the deployment of Oracle Cloud Infrastructure Always Free Tier resources. Both implementations:
+CloudBooter automates deployment of Oracle Cloud Infrastructure Always Free Tier resources.
 
-- Detect and respect Free Tier limits automatically by default.
+- Detect and respect Free Tier limits (June 2026: 2 OCPU / 12 GB A1 pool)
+- Default **Recommended (billing-safe)** profile: 1× A1, 200 GB boot @ 120 VPU
 - Handle transient "Out of Capacity" errors with retry logic
 - Generate production-ready Terraform configurations
 - Support non-interactive/CI mode via environment variables
@@ -95,11 +98,11 @@ cd cloud\OCI
 
 ```bash
 # Using WSL (Windows Subsystem for Linux):
-cd /mnt/c/GitHub/CloudCradle/cloud/OCI
+cd /mnt/c/path/to/cloudbooter/cloud/OCI
 ./setup_oci_terraform.sh
 
 # Using Git Bash:
-cd /c/GitHub/CloudCradle/cloud/OCI
+cd /c/path/to/cloudbooter/cloud/OCI
 ./setup_oci_terraform.sh
 ```
 
@@ -121,13 +124,13 @@ cd /c/GitHub/CloudCradle/cloud/OCI
 
 ## Features
 
-- **Full Free Tier Support**: Automatically provisions AMD and ARM instances within Always Free limits
+- **Full Free Tier Support**: Default billing-safe A1 (2/12) + optional Maximum Free Tier mode
 - **Cross-platform**: Works on Linux, macOS, Windows (with appropriate script choice)
 - **Idempotent Design**: Safe to run multiple times; detects existing resources
 - **Automatic Tooling Setup**: Installs OCI CLI and Terraform if missing
 - **Comprehensive Error Handling**: Retry logic with exponential backoff for transient failures
 - **Resource Discovery**: Inventories existing VCNs, subnets, instances, volumes before changes
-- **SSH Key Generation**: Creates and manages SSH keypairs in `./ssh_keys/`
+- **SSH Key Generation**: ed25519 keypairs in `./ssh_keys/` (RSA retained if already present)
 - **Terraform Generation**: Produces production-ready IaC files
 - **Session Token Auth**: Browser-based authentication flow (no API keys in files)
 - **Non-interactive Mode**: Full automation support for CI/CD pipelines
@@ -162,10 +165,10 @@ Both scripts will check for and install missing dependencies automatically.
 ./setup_oci_terraform.sh
 ```
 
-**Non-interactive automation:**
+**Non-interactive (billing-safe default):**
 
 ```bash
-NON_INTERACTIVE=true AUTO_USE_EXISTING=true AUTO_DEPLOY=true ./setup_oci_terraform.sh
+NON_INTERACTIVE=true AUTO_DEPLOY=true ./setup_oci_terraform.sh
 ```
 
 **Use specific OCI profile:**
@@ -217,6 +220,9 @@ Both implementations support the same environment variables for automation:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `ENFORCE_LIMITS` | Billing-safe enforcement (`auto` \| `true` \| `false`) | `auto` |
+| `AUTO_RESIZE_LEGACY_ARM` | Downsize legacy ARM to 2/12 (`auto` \| `true` \| `false`) | `auto` |
+| `RESIZE_LEGACY_ARM_ONLY` | Run resize workflow only, then exit | `false` |
 | `NON_INTERACTIVE` | Run without prompts | `false` |
 | `AUTO_USE_EXISTING` | Automatically use existing instances | `false` |
 | `AUTO_DEPLOY` | Automatically deploy without confirmation | `false` |
@@ -226,6 +232,8 @@ Both implementations support the same environment variables for automation:
 | `RETRY_MAX_ATTEMPTS` | Max retry attempts for capacity errors | `8` |
 | `RETRY_BASE_DELAY` | Base retry delay in seconds | `15` |
 | `DEBUG` | Enable verbose debugging output | `false` |
+| `OPEN_ALL_PORTS` | Open all ingress on security list | `false` |
+| `EXTRA_INGRESS_PORTS` | Extra TCP ports (comma-separated) | (none) |
 | `TF_BACKEND` | Terraform backend type (`local` or `oci`) | `local` |
 | `TF_BACKEND_BUCKET` | OCI Object Storage bucket for remote state | (none) |
 
@@ -249,13 +257,11 @@ Both scripts follow the same workflow:
    - Validates against Free Tier limits
 
 4. **Generates SSH Keys**
-   - Creates RSA keypair in `./ssh_keys/`
-   - Configures public key for instance access
+   - Creates ed25519 keypair in `./ssh_keys/` (or reuses existing ed25519/RSA)
 
 5. **Creates Terraform Files**
-   - `provider.tf` - OCI provider with session token authentication
-   - `variables.tf` - Free Tier limit checks using Terraform `check` blocks
-   - `main.tf` - VCN, subnets, security lists, compute instances
+   - `provider.tf`, `variables.tf` (with `check` blocks for 2/12 limits)
+   - `main.tf` — VCN, minimal ingress (SSH + optional ports), A1 boot @ 120 VPU
    - `data_sources.tf` - Dynamic data queries (images, availability domains)
    - `block_volumes.tf` - Optional additional storage configurations
    - `cloud-init.yaml` - Instance initialization scripts
@@ -292,9 +298,9 @@ cloud/OCI/
 ├── block_volumes.tf    # Storage configurations
 ├── cloud-init.yaml     # Instance initialization
 ├── terraform.tfstate   # Terraform state (after apply)
-└── ssh_keys/           # Generated SSH keypairs
-    ├── oci_rsa
-    └── oci_rsa.pub
+└── ssh_keys/
+    ├── id_ed25519
+    └── id_ed25519.pub
 ```
 
 ## Troubleshooting
@@ -362,9 +368,10 @@ powershell -ExecutionPolicy Bypass -File .\setup_oci_terraform.ps1
 
 ## Documentation
 
-- **[QUICKSTART.md](docs/QUICKSTART.md)** - Step-by-step walkthrough for manual OCI console setup
-- **[OVERVIEW.md](docs/OVERVIEW.md)** - Comprehensive guide to OCI Always Free Tier with technical details
-- **[FREE_TIER_LIMITS.md](docs/FREE_TIER_LIMITS.md)** - Complete reference for Always Free resource limits and maximization strategies
+- **[USAGE.md](USAGE.md)** — CLI usage and environment variables
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** — Console walkthrough
+- **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — Comprehensive guide
+- **[docs/FREE_TIER_LIMITS.md](docs/FREE_TIER_LIMITS.md)** — Limits, disclaimers, PAYG safety
 
 ## See Also
 

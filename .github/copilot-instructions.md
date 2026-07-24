@@ -62,12 +62,15 @@ Hard limits are embedded as Bash readonly constants (lines 71-79) and replicated
 
 ```bash
 FREE_TIER_MAX_AMD_INSTANCES=2
-FREE_TIER_MAX_ARM_OCPUS=4
-FREE_TIER_MAX_ARM_MEMORY_GB=24
+FREE_TIER_MAX_ARM_OCPUS=2
+FREE_TIER_MAX_ARM_MEMORY_GB=12
 FREE_TIER_MAX_STORAGE_GB=200
+FREE_TIER_DEFAULT_ARM_OCPUS=2
+FREE_TIER_DEFAULT_BOOT_VOLUME_GB=200
+FREE_TIER_BOOT_VOLUME_VPU=120
 ```
 
-**Critical**: These must stay synchronized between Bash and Terraform. Update both when OCI changes limits.
+**Critical**: Keep Bash, PowerShell, `src/cloudbooter/free_tier.py`, and Terraform checks synchronized.
 
 The `validate_proposed_config()` function prevents over-provisioning before Terraform generation.
 

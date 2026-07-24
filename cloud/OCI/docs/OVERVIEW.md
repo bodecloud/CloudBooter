@@ -1,6 +1,9 @@
-# Oracle Cloud Infrastructure (OCI) Always Free Tier: Comprehensive Guide and Quick-Start Tutorial (February 2026 Edition)
+# Oracle Cloud Infrastructure (OCI) Always Free Tier: Comprehensive Guide (July 2026 Edition)
 
-This document merges and significantly expands all provided materials from `NEW_QUICKSTART.md`, `README.md`, and `QUICKSTART.md`. It incorporates verified details from official Oracle documentation (last major update August 2025, confirmed stable as of February 2026 via Oracle Cloud Free Tier pages, service limits, and Always Free resources reference). Every piece of original information has been retained, rewritten for clarity and professionalism, and expanded with additional context, technical explanations, performance nuances, practical tips, edge cases, security considerations, troubleshooting guidance, automation options, risk analysis, real-world use cases, and implications.
+> **Always Free A1 resources reduced (June 2026)**
+> Oracle updated the Always Free allowance for `VM.Standard.A1.Flex` to **2 OCPUs and 12 GB memory** (previously 4 / 24). Verify at [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). Full disclaimer and PAYG guidance: [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md).
+
+This document provides a comprehensive guide to OCI Always Free resources, console walkthrough, and CloudBooter automation. Verified against official Oracle documentation and [viren070's billing-safe guide](https://guides.viren070.me/selfhosting/oracle) as of **July 2026**.
 ## Table of Contents
 
 - [Oracle Cloud Infrastructure (OCI) Always Free Tier: Comprehensive Guide and Quick-Start Tutorial (February 2026 Edition)](#oracle-cloud-infrastructure-oci-always-free-tier-comprehensive-guide-and-quick-start-tutorial-february-2026-edition)
@@ -34,12 +37,12 @@ This document merges and significantly expands all provided materials from `NEW_
 
 Oracle Cloud Infrastructure (OCI) Always Free tier delivers one of the most generous perpetual-free cloud offerings available. It provides indefinite access to production-grade compute, storage, databases, networking, and observability resources—as long as usage stays within published limits. These resources are distinct from the 30-day US$300 promotional trial credit (which can be used on any service) and are available only in your designated **home region** (selected during signup and permanently fixed).
 
-Unlike many competitors' free tiers that offer minimal resources or expire after 12 months, OCI Always Free emphasizes meaningful workloads: a high-performance Arm-based instance pool (equivalent to 4 OCPUs and 24 GB RAM), two burstable x86 micro instances, 200 GB of block storage, two Autonomous Databases, and 10 TB of monthly outbound data transfer. This makes it ideal for self-hosting, development environments, homelabs, lightweight production services, learning cloud-native technologies, and experimentation with modern Arm64 architectures.
+Unlike many competitors' free tiers that offer minimal resources or expire after 12 months, OCI Always Free emphasizes meaningful workloads: an Arm-based instance pool (**2 OCPUs and 12 GB RAM** as of June 2026), up to two burstable x86 micro instances, 200 GB of block storage, two Autonomous Databases, and 10 TB of monthly outbound data transfer. This makes it ideal for self-hosting, development environments, homelabs, lightweight production services, learning cloud-native technologies, and experimentation with modern Arm64 architectures.
 
 **Key Advantages (Explored from Multiple Angles):**
 - **Performance Perspective**: The Ampere A1 Flex shape delivers excellent single-thread and multi-core performance, often outperforming equivalent x86 micro instances for web servers, containers (Docker/Podman), CI/CD runners, and AI inference workloads.
 - **Cost Perspective**: True $0 ongoing cost (no hidden fees if limits observed). Upgrade to Pay-As-You-Go (PAYG) at any time for better capacity without losing Always Free resources.
-- **Flexibility Perspective**: Resources are highly configurable (e.g., split the A1 pool across 1–4 instances).
+- **Flexibility Perspective**: A1 pool configurable as 1×2/12 (recommended) or 2×1/6 instances within the 2 OCPU / 12 GB cap.
 - **Limitations Perspective**: Strict home-region lock-in, variable regional capacity (especially for A1 shapes), and potential idle reclamation require proactive management.
 - **Implications**: Perfect for individuals, students, open-source contributors, and small teams—but not for high-availability production or resource-intensive applications without careful design. One account per person; violations (e.g., multiple accounts, cryptocurrency mining, spam) can lead to suspension.
 
@@ -66,25 +69,20 @@ No material changes to core VM, storage, or database limits have occurred since 
 
 ---
 
-## Detailed Resource Limits (February 2026)
+## Detailed Resource Limits (July 2026)
 
-All limits apply in your home region only. Always Free resources display the “Always Free-eligible” badge in the console. Exceeding limits prevents further provisioning but does not incur charges unless you upgrade to PAYG and use paid resources.
+All limits apply in your home region only. See [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) for full tables, PAYG safety, and resize steps.
 
 ### Compute Instances
-You may create **up to 6 instances total** (2 AMD + up to 4 A1), though storage typically constrains to ~4.
 
-- **AMD Micro (x86-64)**: Up to **2** × `VM.Standard.E2.1.Micro`.  
-  Each provides **1/8 OCPU (burstable)** + **1 GB RAM**.  
-  - Burstable nature: Baseline 1/8 core; can burst higher under light load. Ideal for always-on low-intensity tasks (monitoring agents, small APIs, DNS, SSH bastions).  
-  - Networking: 1 VNIC, 1 public IPv4, up to 50 Mbps internet bandwidth.  
-  - Supported images: Oracle Linux, Ubuntu, CentOS.
+You may create combinations within the caps below (storage often constrains multi-instance layouts).
 
-- **Ampere A1 Flex (Arm64)**: Total shared pool of **4 OCPUs + 24 GB RAM** (equivalent to 3,000 OCPU hours and 18,000 GB hours per month).  
-  - Configurable across **up to 4 instances** using the flexible `VM.Standard.A1.Flex` shape.  
-  - Examples: One powerful `4 OCPU / 24 GB` instance (recommended for performance), two `2/12`, or four `1/6`.  
-  - Excellent for containers, web servers, development, and Arm-native workloads. Higher performance-per-watt than AMD micro instances.  
-  - Minimum per instance: ~47 GB boot volume.  
-  - Supported images: Oracle Linux, Ubuntu (preferred), Oracle Linux Cloud Developer (requires ≥8 GB RAM).
+- **AMD Micro (x86-64)**: Up to **2** × `VM.Standard.E2.1.Micro` (1/8 OCPU + 1 GB RAM each).
+
+- **Ampere A1 Flex (Arm64)**: Total pool **2 OCPUs + 12 GB RAM** (1,500 OCPU-h / 9,000 GB-h per month).
+  - Recommended: one **2 OCPU / 12 GB** instance (billing-safe).
+  - Alternate: two **1 OCPU / 6 GB** instances.
+  - Minimum boot volume: ~47 GB per instance.
 
 **Idle Reclamation Policy (Important Nuance)**: Instances (especially A1) may be automatically stopped or reclaimed if utilization (CPU 95th percentile, network, and memory for A1) stays below ~20% for 7 consecutive days. Mitigation: Run lightweight cron jobs or monitoring to maintain baseline activity.
 
@@ -152,15 +150,15 @@ Leave defaults and click **Select shape**.
 #### For Ampere A1 Flex (Recommended for Most Users – Arm64)
 - Select **Ampere**.  
 - Choose **VM.Standard.A1.Flex**.  
-- Use sliders to allocate from the shared 4 OCPU / 24 GB pool (e.g., 4/24 for maximum power).
+- Use sliders to allocate **2 OCPUs and 12 GB** memory (full Always Free pool).
 
 ![image](https://user-images.githubusercontent.com/7338312/144945509-1d6f269e-47c9-4749-9281-b93c947637a2.png)  
 ![image](https://user-images.githubusercontent.com/7338312/144945640-2809fc13-cc2b-4c36-b033-050da631ff02.png)
 
-**Recommendation**: Start with one A1 instance using the full pool for best performance. Add AMD micros later for auxiliary services. Arm64 compatibility is excellent for Linux ecosystems.
+**Recommendation:** One A1 instance at 2/12 with **200 GB boot @ 120 VPU** (billing-safe). Avoid extra instances on PAYG accounts.
 
 #### Choose an Image (OS)
-Click **Change image**. Ubuntu (latest LTS) or Oracle Linux are excellent. Ubuntu offers broader community support.
+Click **Change image**. Prefer **Canonical Ubuntu 24.04** or Oracle Linux (Always Free eligible).
 
 ![image](https://user-images.githubusercontent.com/7338312/144919299-d39c916b-94e5-4f1a-a25d-20ec6b4d257e.png)  
 ![image](https://user-images.githubusercontent.com/7338312/144919489-20ac31e0-bfe0-4788-a0f2-ff930468b7b0.png)
@@ -172,13 +170,13 @@ Defaults are optimal for most (public subnet, auto-assign public IP). Adjust onl
 
 ### 7. Add SSH Keys
 - Select **Paste public keys**.  
-- Paste contents of `~/.ssh/id_rsa.pub` (or generate/upload).  
-- **Best practice**: Use ed25519 keys for modern security; never use password authentication.
+- Paste contents of `~/.ssh/id_ed25519.pub` (generate with `ssh-keygen -t ed25519`).
+- **Best practice**: Use ed25519 keys; never use password authentication.
 
 ![image](https://user-images.githubusercontent.com/7338312/144919789-c456c22b-8943-4ad0-a784-b94ab084c022.png)
 
 ### 8. Configure Boot Volume
-Leave default (~50 GB) for multiple instances. For a single powerful instance, increase up to the 200 GB total limit.
+For a single A1 instance, set **200 GB** boot volume with **120 VPU** performance (uses full block storage allowance).
 
 **Performance Note**: Boot volumes are faster and simpler than attaching block volumes.
 
