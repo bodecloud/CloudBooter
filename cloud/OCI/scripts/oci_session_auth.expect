@@ -1,0 +1,13 @@
+#!/usr/bin/expect -f
+set timeout 120
+spawn oci session authenticate --no-browser --region us-chicago-1 --profile-name dgorsch4
+expect {
+    -re {(?i)create a new config} { send "Y\r"; exp_continue }
+    -re {(?i)tenancy} { send "\r"; exp_continue }
+    -re {(https://[^\r\n\]\s]+)} {
+        set url $expect_out(1,string)
+        puts "AUTH_URL=$url"
+        exp_continue
+    }
+    eof
+}

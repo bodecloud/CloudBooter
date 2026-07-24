@@ -15,7 +15,7 @@ Terminal-first, inspect-before-apply bootstrap: inventory what exists, enforce b
 
 ## Who it's for
 
-**Primary:** Homelab operator — They're hiring CloudBooter to keep several Oracle (and future GCP) tenancies inside Always Free without living in the console.
+**Primary:** Homelab operator — They're hiring CloudBooter to keep several Oracle (and future GCP / Cloudflare) accounts inside Always Free / free-plan limits without living in the console.
 
 **Secondary:** Maintainer — They're hiring CloudBooter to encode policy (strict limits, resize-only fast paths) as repeatable scripts and tests.
 
@@ -35,7 +35,7 @@ _Why it serves the approach:_ OCI is the only fully implemented provider and the
 
 ### Multi-cloud scaffold
 
-GCP scaffold and shared Python patterns (`free_tier`, CLI hooks) portable across providers.
+GCP and Cloudflare scaffolds and shared Python patterns (`free_tier`, CLI hooks) portable across providers.
 
 _Why it serves the approach:_ Keeps the billing-safe pattern reusable instead of one-off bash per cloud.
 

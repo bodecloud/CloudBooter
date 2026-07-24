@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudbooter-cloudflare"
+version = "0.1.0"
+description = "Cloudflare Free-plan provisioning toolkit — parity with ./cloud/OCI and ./cloud/GCP"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.32.0",
+  "click>=8.1.0",
+  "jinja2>=3.1.0",
+  "pyyaml>=6.0",
+  "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+cloudbooter-cloudflare = "cloudbooter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
