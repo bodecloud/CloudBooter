@@ -1,0 +1,14 @@
+#!/usr/bin/expect -f
+set timeout 120
+set user [lindex $argv 0]
+set pass [lindex $argv 1]
+spawn pass-cli login $user --interactive
+expect {
+    -re "(?i)password" { send "$pass\r"; exp_continue }
+    -re "(?i)passphrase" { send "$pass\r"; exp_continue }
+    -re "(?i)two-factor|2fa|totp" { exit 2 }
+    -re "(?i)error|failed|invalid" { exit 1 }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

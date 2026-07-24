@@ -4,7 +4,7 @@ CloudBooter is a terminal-first bootstrapper for cloud infrastructure.
 
 The goal is simple: give beginners a safe, repeatable “starting point” for a cloud account (network + compute + access) with sensible defaults, so they can learn by changing one thing at a time.
 
-This repository is intentionally multi-cloud in scope (AWS, Azure, GCP, OCI, and others). **OCI** is fully implemented (Bash + PowerShell). **GCP** has a parallel scaffold under `cloud/GCP/`. AWS and Azure remain planned.
+This repository is intentionally multi-cloud in scope (AWS, Azure, GCP, OCI, Cloudflare, and others). **OCI** is fully implemented (Bash + PowerShell). **GCP** and **Cloudflare** have parallel scaffolds under `cloud/GCP/` and `cloud/Cloudflare/`. AWS and Azure remain planned.
 
 If you’ve ever opened a cloud console and thought “I don’t even know what I should click first,” CloudBooter is for you.
 
@@ -35,6 +35,7 @@ CloudBooter is designed as a multi-provider bootstrapper, but provider support r
 |---|---:|---|
 | OCI | Supported | Inventory, generate Terraform, optional auto-deploy; Bash and PowerShell |
 | GCP | In progress | Scaffold under `cloud/GCP/` (Python + Bash) |
+| Cloudflare | In progress | Scaffold under `cloud/Cloudflare/` (Workers/R2/D1/KV free-tier baseline) |
 | AWS | Planned | VPC + subnet + security group + EC2 baseline |
 | Azure | Planned | Resource group + VNet + subnet + NSG + VM baseline |
 
@@ -347,6 +348,7 @@ This repo is organized by provider:
 │  │     ├─ OVERVIEW.md
 │  │     └─ FREE_TIER_LIMITS.md
 │  ├─ GCP/                           (in progress)
+│  └─ Cloudflare/                    (in progress)
 ```
 
 Each provider folder should be runnable on its own and contain its own docs.
@@ -379,6 +381,7 @@ CloudBooter’s roadmap is incremental: add providers without changing the workf
 - AWS: VPC baseline + security group + EC2 + keypair guidance
 - Azure: resource group + VNet + subnet + NSG + VM
 - GCP: VPC + subnet + firewall + VM
+- Cloudflare: Workers (+ workers.dev) + KV + R2 + D1 free-tier baseline
 
 Each provider will start with a conservative baseline and expand only after the initial “first working deployment” is smooth.
 

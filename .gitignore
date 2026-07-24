@@ -353,7 +353,9 @@ reference_readonly
 
 # Bitwarden / OCI orchestrator secrets and reports
 cloud/OCI/.bw-items.json
+cloud/OCI/bitwarden_export_*.json
 cloud/OCI/reports/oci-bw-migration-*
+agentdecompile_projects/
 .cache/cloudbooter/
 ssh_keys/** */
 ssh_keys/*
