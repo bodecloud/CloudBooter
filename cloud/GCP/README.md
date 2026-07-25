@@ -1,107 +1,62 @@
-# CloudBooter GCP
+# CloudBooter for Google Cloud (GCP)
 
-> Automated Google Cloud Platform Always-Free-Tier provisioner.
-> Generates validated Terraform files and deploys an `e2-micro` instance at zero cost.
+Sets up a small Always Free-friendly Compute Engine layout and writes Terraform you can inspect before applying.
 
----
+GCP still requires a billing account even for Always Free usage. The free compute allowance is **744 `e2-micro` hours per month** in three US regions — enough for one instance running all month, not a blank check.
 
-## Quick Start
+## Quick start
 
 ```bash
 export GCP_PROJECT_ID="my-project"
+cd cloud/GCP
 ./setup_gcp_terraform.sh
 ```
 
-For Windows, use `setup_gcp_terraform.ps1`.
+Windows: `.\setup_gcp_terraform.ps1`
 
-See [docs/QUICKSTART.md](docs/QUICKSTART.md) for full options.
+Full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md). Commands and env vars: [USAGE.md](USAGE.md).
 
----
+## What the default creates
 
-## What Gets Created
-
-| Resource | Type | Free? |
+| Resource | Type | Free allowance? |
 |---|---|---|
-| VPC | `google_compute_network` | ✅ |
-| Subnet | `google_compute_subnetwork` | ✅ |
-| SSH firewall rule | `google_compute_firewall` | ✅ |
-| ICMP firewall rule | `google_compute_firewall` | ✅ |
-| Boot disk (≤ 30 GB pd-standard) | `google_compute_disk` | ✅ |
-| Instance (`e2-micro` in us-*) | `google_compute_instance` | ✅ |
+| VPC | `google_compute_network` | Yes |
+| Subnet | `google_compute_subnetwork` | Yes |
+| SSH + ICMP firewall rules | `google_compute_firewall` | Yes (logging off) |
+| Boot disk ≤ 30 GB `pd-standard` | `google_compute_disk` | Yes |
+| `e2-micro` in `us-central1` / `us-west1` / `us-east1` | `google_compute_instance` | Yes within 744 h/month |
 
----
+## Guardrails
 
-## Free Tier Guardrails
+Three layers, same idea as OCI:
 
-Three independent layers prevent accidental paid usage:
+1. Bash / PowerShell constants before generation
+2. Python `GCPFreeTierLimits` for the CLI and tests
+3. Terraform `check` blocks at plan / apply time
 
-1. **Bash constants** (`readonly FREE_*`) — validation before Terraform generation
-2. **Python dataclass** (`GCPFreeTierLimits`) — used by the Python CLI and tests
-3. **Terraform `check` blocks** — enforced at plan/apply time by Terraform itself
+Override only with `GCP_ALLOW_PAID_RESOURCES=true`. Numbers: [docs/FREE_TIER_LIMITS.md](docs/FREE_TIER_LIMITS.md).
 
-See [docs/FREE_TIER_LIMITS.md](docs/FREE_TIER_LIMITS.md) for the full limits reference.
+## Layout
 
----
-
-## Directory Structure
-
-```
+```text
 cloud/GCP/
-├── setup_gcp_terraform.sh      Main Bash orchestrator
-├── setup_gcp_terraform.ps1     Windows PowerShell equivalent
-├── requirements.txt            Python dependencies
-├── pyproject.toml              Python package metadata
-├── pytest.ini                  Test configuration
-├── main.py                     Direct invocation wrapper
-├── run_tests.py                Test runner wrapper
-├── src/cloudbooter/
-│   ├── free_tier.py            GCP free-tier constants & validation
-│   ├── renderers.py            Terraform HCL generators
-│   ├── installer.py            3-tier gcloud + terraform installer
-│   ├── auth.py                 Auth pattern detection & credential building
-│   ├── inventory.py            Resource discovery (gcloud + SDK fallback)
-│   └── cli.py                  Click CLI: deploy, validate, inventory
+├── setup_gcp_terraform.sh
+├── setup_gcp_terraform.ps1
+├── src/cloudbooter/     # free_tier, renderers, auth, inventory, CLI
 ├── tests/
-│   ├── conftest.py             Shared fixtures
-│   ├── test_renderers.py       HCL output validation
-│   ├── test_free_tier.py       Validation logic tests
-│   ├── test_integration.py     Auth → inventory → render pipeline
-│   └── test_e2e_workflow.py    Full dry-run end-to-end tests
 └── docs/
-    ├── OVERVIEW.md
-    ├── QUICKSTART.md
-    └── FREE_TIER_LIMITS.md
 ```
 
----
-
-## Non-Interactive (CI/CD)
-
-```bash
-GCP_PROJECT_ID=my-proj \
-GCP_CREDENTIALS_FILE=/path/to/sa-key.json \
-NON_INTERACTIVE=true \
-AUTO_DEPLOY=true \
-./setup_gcp_terraform.sh
-```
-
----
-
-## Running Tests
+## Tests
 
 ```bash
 cd cloud/GCP
-pip install -e ".[dev]"
+pip install -e ".[dev]"   # or: pip install -r requirements.txt && pip install -e .
 pytest
 ```
 
-Tests requiring a live GCP project are automatically skipped unless
-`GOOGLE_CLOUD_PROJECT` and valid credentials are present.
-
-Tests requiring `terraform` on `PATH` are skipped if it is not installed.
-
----
+Live-project tests skip unless credentials and a project are present. Tests that need `terraform` on `PATH` skip when it is missing.
 
 ## License
 
-See the root [LICENSE](../../LICENSE) file.
+MIT — see the root [LICENSE](../../LICENSE).

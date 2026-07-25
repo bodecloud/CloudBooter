@@ -1,30 +1,32 @@
-# Aider Conventions
+# Project conventions
 
-## Coding Conventions
-- Prefer explicit, descriptive names over abbreviations.
-- Keep functions focused and cohesive.
-- Preserve existing code style and formatting in each file.
-- Avoid unrelated refactors during task completion.
+## Code
 
-## Planning and Documentation Diagram Policy
+- Prefer clear names over abbreviations.
+- Keep functions focused.
+- Match the style already used in the file you touch.
+- Avoid unrelated refactors while fixing a specific task.
 
-- Every new or updated planning/design document must include at least one Mermaid diagram.
-- The diagram should appear near the top (after objective/scope) and provide a high-level flow.
-- Keep diagrams synchronized with the written steps when plans evolve.
-- Prefer simple `flowchart TD` diagrams for execution plans and phase sequencing.
-- If a document has multiple phases/modules, include one top-level diagram plus optional focused diagrams.
+## Docs and plans
 
-## Repository Conventions
-- Follow OCI module patterns when building provider equivalents.
-- Keep validation logic close to configuration decisions.
-- Keep generated artifact naming consistent with existing Terraform workflow.
+- Every new or updated planning / design document needs at least one Mermaid `flowchart TD` near the top (after the objective).
+- Keep diagrams in sync when the written steps change.
+- For multi-phase plans, one top-level diagram is enough; add focused diagrams only when they help.
 
-## Change Discipline
-- Make smallest meaningful diffs.
-- Update docs for user-visible behavior changes.
+## Providers
+
+- Follow the OCI module layout when adding a provider under `cloud/<PROVIDER>/`.
+- Keep free-tier validation next to the configuration decisions that use it.
+- Keep generated Terraform filenames consistent with the existing workflow.
+
+## Change discipline
+
+- Prefer the smallest meaningful diff.
+- Update docs when user-visible behavior changes.
 - Add or adjust tests when behavior changes.
 
-## Working Loop
+## Working loop
+
 ```mermaid
 flowchart TD
     A[Read task] --> B[Inspect code]

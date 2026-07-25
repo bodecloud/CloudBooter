@@ -1,192 +1,50 @@
-# Oracle Cloud Infrastructure (OCI) Always Free Tier: Comprehensive Guide (July 2026 Edition)
+# OCI overview
 
-> **Always Free A1 resources reduced (June 2026)**
-> Oracle updated the Always Free allowance for `VM.Standard.A1.Flex` to **2 OCPUs and 12 GB memory** (previously 4 / 24). Verify at [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). Full disclaimer and PAYG guidance: [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md).
+How the Oracle Cloud path in CloudBooter fits together.
 
-This document provides a comprehensive guide to OCI Always Free resources, console walkthrough, and CloudBooter automation. Verified against official Oracle documentation and [viren070's billing-safe guide](https://guides.viren070.me/selfhosting/oracle) as of **July 2026**.
-## Table of Contents
+```mermaid
+flowchart TD
+  A[Auth: session token or API key] --> B[Inventory VCN instances volumes]
+  B --> C[Validate Always Free caps]
+  C --> D[Generate Terraform + SSH keys]
+  D --> E{AUTO_DEPLOY?}
+  E -- no --> F[Inspect plan yourself]
+  E -- yes --> G[terraform init plan apply with capacity retry]
+```
 
-- [Oracle Cloud Infrastructure (OCI) Always Free Tier: Comprehensive Guide and Quick-Start Tutorial (February 2026 Edition)](#oracle-cloud-infrastructure-oci-always-free-tier-comprehensive-guide-and-quick-start-tutorial-february-2026-edition)
-  - [Table of Contents](#table-of-contents)
-  - [Introduction and Overview](#introduction-and-overview)
-  - [Always Free Tier Eligibility, Signup, and Key Considerations](#always-free-tier-eligibility-signup-and-key-considerations)
-  - [Detailed Resource Limits (February 2026)](#detailed-resource-limits-february-2026)
-    - [Compute Instances](#compute-instances)
-    - [Storage](#storage)
-    - [Databases](#databases)
-    - [Networking](#networking)
-    - [Other Always Free Services](#other-always-free-services)
-  - [Quick Start: Creating Your First Always Free Compute Instance](#quick-start-creating-your-first-always-free-compute-instance)
-    - [1. Create Your Account](#1-create-your-account)
-    - [2. Log In to the OCI Console](#2-log-in-to-the-oci-console)
-    - [3. Navigate to Compute Instances](#3-navigate-to-compute-instances)
-    - [4. Name and Region Confirmation](#4-name-and-region-confirmation)
-    - [5. Choose Image and Shape (CPU Architecture)](#5-choose-image-and-shape-cpu-architecture)
-      - [For AMD Micro (Lightweight, x86)](#for-amd-micro-lightweight-x86)
-      - [For Ampere A1 Flex (Recommended for Most Users – Arm64)](#for-ampere-a1-flex-recommended-for-most-users--arm64)
-      - [Choose an Image (OS)](#choose-an-image-os)
-    - [6. Configure Networking](#6-configure-networking)
-    - [7. Add SSH Keys](#7-add-ssh-keys)
-    - [8. Configure Boot Volume](#8-configure-boot-volume)
-    - [9. Review and Create the Instance](#9-review-and-create-the-instance)
-    - [10. Connect via SSH](#10-connect-via-ssh)
+## What this provider is for
 
----
+OCI has a useful Always Free tier, but the console is easy to overshoot — especially after the June 2026 A1 cut to 2 OCPU / 12 GB, and especially on PAYG accounts. CloudBooter inventories first, prefers a billing-safe default, and writes Terraform instead of hiding the cloud behind a black box.
 
-## Introduction and Overview
+## Layers
 
-Oracle Cloud Infrastructure (OCI) Always Free tier delivers one of the most generous perpetual-free cloud offerings available. It provides indefinite access to production-grade compute, storage, databases, networking, and observability resources—as long as usage stays within published limits. These resources are distinct from the 30-day US$300 promotional trial credit (which can be used on any service) and are available only in your designated **home region** (selected during signup and permanently fixed).
+| Piece | Role |
+|---|---|
+| `setup_oci_terraform.sh` / `.ps1` | Main orchestrators |
+| `src/cloudbooter/` | Free-tier constants, Python CLI (`audit`, Bitwarden resize helpers) |
+| `bw_oci_resize_all.sh` | Multi-account legacy ARM resize via Bitwarden |
+| Generated `.tf` files | Written at run time; not committed |
 
-Unlike many competitors' free tiers that offer minimal resources or expire after 12 months, OCI Always Free emphasizes meaningful workloads: an Arm-based instance pool (**2 OCPUs and 12 GB RAM** as of June 2026), up to two burstable x86 micro instances, 200 GB of block storage, two Autonomous Databases, and 10 TB of monthly outbound data transfer. This makes it ideal for self-hosting, development environments, homelabs, lightweight production services, learning cloud-native technologies, and experimentation with modern Arm64 architectures.
+## Auth
 
-**Key Advantages (Explored from Multiple Angles):**
-- **Performance Perspective**: The Ampere A1 Flex shape delivers excellent single-thread and multi-core performance, often outperforming equivalent x86 micro instances for web servers, containers (Docker/Podman), CI/CD runners, and AI inference workloads.
-- **Cost Perspective**: True $0 ongoing cost (no hidden fees if limits observed). Upgrade to Pay-As-You-Go (PAYG) at any time for better capacity without losing Always Free resources.
-- **Flexibility Perspective**: A1 pool configurable as 1×2/12 (recommended) or 2×1/6 instances within the 2 OCPU / 12 GB cap.
-- **Limitations Perspective**: Strict home-region lock-in, variable regional capacity (especially for A1 shapes), and potential idle reclamation require proactive management.
-- **Implications**: Perfect for individuals, students, open-source contributors, and small teams—but not for high-availability production or resource-intensive applications without careful design. One account per person; violations (e.g., multiple accounts, cryptocurrency mining, spam) can lead to suspension.
+Interactive runs usually use browser session tokens (`oci session authenticate`). Non-interactive / multi-account flows use API keys from the environment or Bitwarden custom fields. Instance principal is available when you run on an OCI compute instance.
 
-No material changes to core VM, storage, or database limits have occurred since 2023. The console continues to display an “Always Free-eligible” badge for supported shapes. Capacity availability improved in popular regions (Ashburn, Frankfurt, Phoenix) but remains first-come, first-served.
+## Guardrails
 
----
+Free-tier numbers live in three places on purpose:
 
-## Always Free Tier Eligibility, Signup, and Key Considerations
+1. Bash / PowerShell constants in the setup scripts
+2. `src/cloudbooter/free_tier.py`
+3. Terraform `check` blocks in generated `variables.tf`
 
-**Eligibility**: Available globally in regions where commercial OCI is offered. One account per individual. Requires accurate contact and billing details. Virtual/prepaid cards are **not** accepted.
+`ENFORCE_LIMITS=auto` turns enforcement on for PAYG tenancies. Set `true` to always enforce, `false` only if you know why you are bypassing it.
 
-**Signup Process**:
-1. Visit the official page: [https://www.oracle.com/cloud/free/](https://www.oracle.com/cloud/free/) or directly [https://signup.cloud.oracle.com/](https://signup.cloud.oracle.com/).
-2. Provide email, name, and country/territory (this influences available home regions and billing address alignment).
-3. Enter a valid **credit or debit card** (must function like a credit card; no virtual, single-use, or PIN-only debit cards). Oracle performs identity verification with a temporary authorization hold (automatically released within 3–5 days; **no charges** if you stay within Always Free limits).
-4. Choose your **home region** carefully during signup (cannot be changed later). Prioritize regions with strong A1 Ampere availability and low latency to your location. Popular reliable choices: `us-ashburn-1` (Ashburn), `eu-frankfurt-1` (Frankfurt), `us-phoenix-1` (Phoenix). The billing address country must align with the selected region per OCI policy.
+## Capacity retries
 
-**Important Nuances and Edge Cases**:
-- Home region lock-in ensures resources stay in one location for compliance and simplicity but means capacity shortages cannot be bypassed by switching regions without creating a new account.
-- After verification (typically minutes to hours), you receive immediate access to Always Free resources plus the $300 trial credit.
-- If capacity is unavailable during initial creation, the console will show errors—retry in a different availability domain (AD) or wait (often resolves in hours/days).
+Always Free shapes often return "Out of Capacity". Apply is wrapped in exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`). That is intentional, not a hang.
 
-**Implications**: Selecting the right home region at signup is one of the most critical decisions. Test availability by attempting instance creation shortly after signup.
+## More reading
 
----
-
-## Detailed Resource Limits (July 2026)
-
-All limits apply in your home region only. See [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) for full tables, PAYG safety, and resize steps.
-
-### Compute Instances
-
-You may create combinations within the caps below (storage often constrains multi-instance layouts).
-
-- **AMD Micro (x86-64)**: Up to **2** × `VM.Standard.E2.1.Micro` (1/8 OCPU + 1 GB RAM each).
-
-- **Ampere A1 Flex (Arm64)**: Total pool **2 OCPUs + 12 GB RAM** (1,500 OCPU-h / 9,000 GB-h per month).
-  - Recommended: one **2 OCPU / 12 GB** instance (billing-safe).
-  - Alternate: two **1 OCPU / 6 GB** instances.
-  - Minimum boot volume: ~47 GB per instance.
-
-**Idle Reclamation Policy (Important Nuance)**: Instances (especially A1) may be automatically stopped or reclaimed if utilization (CPU 95th percentile, network, and memory for A1) stays below ~20% for 7 consecutive days. Mitigation: Run lightweight cron jobs or monitoring to maintain baseline activity.
-
-### Storage
-- **Block Volume + Boot Volumes**: **200 GB total** combined across all instances and additional block volumes.  
-  - Minimum boot volume: **47 GB** per instance (console default ~50 GB).  
-  - Boot volumes are recommended—they are higher-performance NVMe and simpler to manage than separate block volumes.  
-  - Up to **5 volume backups** (boot + block combined).  
-- **Object Storage**: **20 GB** total (Standard + Infrequent Access + Archive tiers) for Always Free accounts post-trial. **50,000 API requests/month**.
-
-### Databases
-- **Autonomous Databases**: **2 total** (across Transaction Processing, Data Warehouse, JSON, or APEX). Each: 1 OCPU, 20 GB storage, max 20 sessions. Serverless Exadata infrastructure.
-- **MySQL HeatWave**: **1 standalone** instance with 50 GB storage + 50 GB backup.
-- **NoSQL Database**: 3 tables, 25 GB each, with monthly read/write limits.
-
-### Networking
-- **Load Balancers**: 1 Flexible Load Balancer (10 Mbps) + 1 Network Load Balancer.
-- **VCNs**: Up to **2** (with IPv4/IPv6 support).
-- **Site-to-Site VPN**: Up to **50** connections.
-- **Outbound Data Transfer**: **10 TB per month** (inbound generally free).
-- **Port 25 (SMTP)**: Blocked by default for anti-spam; request exemption via support if needed for legitimate email.
-
-### Other Always Free Services
-Comprehensive list includes: Monitoring (500M ingestion points), Notifications, Logging (10 GB/month), Vault (150 secrets), Bastions (5), Resource Manager (Terraform), APEX, Content Management Starter Edition, and more. Full details in the [official Always Free resources page](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
-
-**How Limits Interact (Edge Cases)**: Storage is the practical bottleneck. A single A1 instance can use nearly the full 200 GB boot volume. Creating 4 A1 + 2 AMD requires careful sizing (~50 GB each minimum for 4 instances leaves little room).
-
----
-
-## Quick Start: Creating Your First Always Free Compute Instance
-
-### 1. Create Your Account
-Navigate to [https://signup.cloud.oracle.com/](https://signup.cloud.oracle.com/). Complete the form with accurate details and a valid credit/debit card. Select your home region thoughtfully.
-
-### 2. Log In to the OCI Console
-
-![SignIn](https://user-images.githubusercontent.com/7338312/113791051-60882600-9708-11eb-801e-3f0624aca2dc.png)
-
-### 3. Navigate to Compute Instances
-1. Click the **hamburger menu** (☰) in the top-left.  
-2. Expand **Compute** → **Instances**.  
-3. Click **Create instance**.
-
-![image](https://user-images.githubusercontent.com/7338312/144918356-a91aa72c-2bf7-4964-bf35-e3032c4e00c2.png)  
-![image](https://user-images.githubusercontent.com/7338312/144918469-c98f44dc-306e-440c-ab10-00c9b7ea62c1.png)
-
-**Tip**: Bookmark the Instances page for frequent access.
-
-### 4. Name and Region Confirmation
-- Enter a clear, descriptive name (e.g., `ubuntu-a1-prod-01`).  
-- Wait for autofill. Confirm the region displays the **“Always Free-eligible”** badge.
-
-![image](https://user-images.githubusercontent.com/7338312/144918675-3e4fbce2-875e-4ac1-ae7a-d18d66fd2f4a.png)
-
-**Nuance**: If no badge appears, the chosen AD or region may lack capacity—switch ADs.
-
-### 5. Choose Image and Shape (CPU Architecture)
-Click **Edit** next to “Image and Shape”.
-
-#### For AMD Micro (Lightweight, x86)
-Leave defaults and click **Select shape**.
-
-![image](https://user-images.githubusercontent.com/7338312/144919139-0e53da3e-ccc2-4d5a-b42d-c3651fc056f0.png)
-
-#### For Ampere A1 Flex (Recommended for Most Users – Arm64)
-- Select **Ampere**.  
-- Choose **VM.Standard.A1.Flex**.  
-- Use sliders to allocate **2 OCPUs and 12 GB** memory (full Always Free pool).
-
-![image](https://user-images.githubusercontent.com/7338312/144945509-1d6f269e-47c9-4749-9281-b93c947637a2.png)  
-![image](https://user-images.githubusercontent.com/7338312/144945640-2809fc13-cc2b-4c36-b033-050da631ff02.png)
-
-**Recommendation:** One A1 instance at 2/12 with **200 GB boot @ 120 VPU** (billing-safe). Avoid extra instances on PAYG accounts.
-
-#### Choose an Image (OS)
-Click **Change image**. Prefer **Canonical Ubuntu 24.04** or Oracle Linux (Always Free eligible).
-
-![image](https://user-images.githubusercontent.com/7338312/144919299-d39c916b-94e5-4f1a-a25d-20ec6b4d257e.png)  
-![image](https://user-images.githubusercontent.com/7338312/144919489-20ac31e0-bfe0-4788-a0f2-ff930468b7b0.png)
-
-### 6. Configure Networking
-Defaults are optimal for most (public subnet, auto-assign public IP). Adjust only for private networking or custom VCNs.
-
-**Security Note**: Public IP is convenient but expose only necessary ports via security lists.
-
-### 7. Add SSH Keys
-- Select **Paste public keys**.  
-- Paste contents of `~/.ssh/id_ed25519.pub` (generate with `ssh-keygen -t ed25519`).
-- **Best practice**: Use ed25519 keys; never use password authentication.
-
-![image](https://user-images.githubusercontent.com/7338312/144919789-c456c22b-8943-4ad0-a784-b94ab084c022.png)
-
-### 8. Configure Boot Volume
-For a single A1 instance, set **200 GB** boot volume with **120 VPU** performance (uses full block storage allowance).
-
-**Performance Note**: Boot volumes are faster and simpler than attaching block volumes.
-
-![image](https://user-images.githubusercontent.com/7338312/144945033-f2d602b8-b7f9-438b-be66-3e9a04bbe56a.png)
-
-### 9. Review and Create the Instance
-Review all settings → **Create**. Provisioning takes 1–5 minutes. Watch for green “Running” status and note the **public IP**.
-
-![image](https://user-images.githubusercontent.com/7338312/144945150-7373060d-77d8-45a8-a456-4eb99463adcb.png)
-
-### 10. Connect via SSH
-```bash
-ssh ubuntu@<your-public-ip>
+- [QUICKSTART.md](QUICKSTART.md) — first successful run
+- [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) — numbers, PAYG, resize
+- [../USAGE.md](../USAGE.md) — env vars and Bitwarden flow

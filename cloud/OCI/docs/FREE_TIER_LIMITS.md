@@ -1,213 +1,66 @@
-# Oracle Cloud Always Free Tier Guide
+# Oracle Cloud Always Free limits
 
-**Complete reference for Oracle Cloud Infrastructure Always Free tier resources, maximization strategies, and Terraform bootstrap (updated July 2026).**
+Reference for Always Free caps, PAYG safety, and how CloudBooter stays inside them. Verified against Oracle docs and [viren070's billing-safe guide](https://guides.viren070.me/selfhosting/oracle) as of **24 July 2026**.
 
-> **Always Free A1 resources reduced (June 2026)**
-> On 12 June 2026, Oracle updated the Always Free allowance for `VM.Standard.A1.Flex` (Arm) to **2 OCPUs and 12 GB memory** — down from the previous 4 OCPUs and 24 GB. Oracle has not issued broad official communication about this change; the Cost Estimator and Cost Analysis forecast may still report $0 for legacy 4/24 sizing. Verify current limits at [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). If you already have a 4/24 instance, see [Resizing a legacy instance](#resizing-a-legacy-424-instance) before upgrading to PAYG.
->
-> **Billing safety (especially PAYG):** Always Free covers **200 GB total block storage** and your allocated A1 OCPU/memory pool. Any extra instances, volumes, or shapes outside Always Free limits may incur charges. Egress beyond **10 TB/month** is billable. Pure Always Free accounts cannot be charged for in-tier resources; **Pay-As-You-Go (PAYG) accounts can be charged** for usage above Always Free limits. CloudBooter's default profile follows [viren070's billing-safe guide](https://guides.viren070.me/selfhosting/oracle): exactly **1× A1 (2/12)** with **200 GB boot** — no extra instances or volumes.
+> **June 2026 A1 reduction.** Always Free `VM.Standard.A1.Flex` is now **2 OCPUs and 12 GB memory** (was 4 / 24). Cost Estimator / Cost Analysis can still look wrong for a while. Confirm at [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). If you still have a 4/24 instance, resize it — see below — before you rely on PAYG.
 
-Oracle Cloud's **Always Free** tier provides indefinite access to specific production-grade resources at zero cost in your home region. Standout limits include:
+> **PAYG warning.** Pure Always Free accounts are not charged for in-tier resources. **Pay-as-you-go accounts are charged for anything above Always Free caps.** CloudBooter's default is one A1 (2/12) with a 200 GB boot volume and no extra instances.
 
-- Arm A1 Flex pool: **2 OCPU + 12 GB RAM** total (1,500 OCPU-h / 9,000 GB-h per month)
-- Block storage: **200 GB** combined
-- Outbound data transfer: **10 TB/month**
+## Core limits
 
-## Quick Utilization Checklist
+| Category | Resource | Quota | Notes |
+|---|---|---|---|
+| Compute (AMD) | `VM.Standard.E2.1.Micro` | 2 instances | 1/8 OCPU, 1 GB RAM each; single AD in multi-AD regions |
+| Compute (Arm) | `VM.Standard.A1.Flex` | **2 OCPU + 12 GB total** | 1×2/12 or 2×1/6; min boot ~47 GB |
+| Block storage | Boot + block | 200 GB + 5 backups | Home region only |
+| Object storage | Standard + IA + Archive | 20 GB combined (post-trial) | Over 20 GB at trial end deletes objects |
+| Networking | LB / NLB / VCN / egress | 1 Flex LB (10 Mbps), 1 NLB, 2 VCNs, 10 TB egress/month | Port 25 blocked by default |
 
-1. Sign up at https://signup.cloud.oracle.com/ (valid credit/debit card; no virtual/prepaid)
-2. Choose home region carefully — Ashburn and Frankfurt often have better A1 availability
-3. Use CloudBooter's **Recommended (billing-safe)** profile or the console walkthrough below
+Optional Always Free databases (not created by the bootstrap script): Autonomous DB (2), MySQL HeatWave (1), NoSQL tables within published caps.
 
-## Table of Contents
+### Idle reclamation (official)
 
-- [Key Resources and Limits](#key-resources-and-limits)
-- [Detailed Limits Tables](#detailed-limits-tables)
-- [Maximizing Value](#maximizing-value)
-- [PAYG Upgrade and Billing Safety](#payg-upgrade-and-billing-safety)
-- [Resizing a legacy 4/24 instance](#resizing-a-legacy-424-instance)
-- [Getting Started](#getting-started)
-- [Synchronization Checklist](#synchronization-checklist)
-- [References](#references)
+Oracle may reclaim idle Always Free compute if, over 7 days, CPU / network / memory (A1) utilization stay under about 20% at the 95th percentile. Keep real workloads on the instance. Do not run synthetic CPU burners just to dodge reclamation.
 
-## Key Resources and Limits
+## CloudBooter profiles
 
-### Compute Resources
+| Profile | Menu | Layout | Best for |
+|---|---|---|---|
+| Recommended (billing-safe) | Option 4 (default) | 1× A1 (2/12), 200 GB boot @ 120 VPU | First deploy, PAYG accounts |
+| Maximum Free Tier | Option 5 | All available AMD + A1 | Advanced homelab only — **PAYG risk** |
 
-**AMD Micro Instances:**
+`NON_INTERACTIVE=true` always picks the billing-safe profile.
 
-- Limit: up to **2** instances
-- Shape: `VM.Standard.E2.1.Micro`
-- CPU/RAM: 1/8 OCPU (burstable), 1 GB RAM each
-- Eligible images: Oracle Linux Cloud Developer, Oracle Linux, Ubuntu, CentOS
-- Single availability domain only in multi-AD regions
+## PAYG upgrade and budgets
 
-**ARM A1 Flex Instances:**
+Upgrading to PAYG often improves A1 capacity. Always Free in-tier resources stay $0 if you stay inside the caps. Oracle places a temporary authorization hold on the card when you upgrade.
 
-- Limit: **2 OCPUs + 12 GB RAM** total across the pool
-- Shape: `VM.Standard.A1.Flex`
-- Allocation: **1 instance at 2/12** (recommended) or up to **2 instances at 1 OCPU / 6 GB** each
-- Equivalent: 1,500 OCPU hours and 9,000 GB hours per month
-- Minimum boot volume: 47 GB per instance
-- Oracle Linux Cloud Developer requires ≥8 GB RAM if selected
+Recommended: create a **$1** budget with a low forecast threshold and an email alert the day you upgrade. Check **Cost Analysis** with forecast enabled and confirm it stays near $0 for Always Free-only usage.
 
-### Storage
+You cannot downgrade a tenancy from PAYG back to Always Free-only.
 
-**Block/Boot Volumes:**
+Script behavior when limits are enforced (`ENFORCE_LIMITS=auto` on PAYG, or `true` always):
 
-- Total: **200 GB** combined (boot + attached block volumes)
-- Backups: up to **5** total
-- Home region only
-- Recommended (billing-safe): **200 GB on a single A1 boot volume** at **120 VPU** performance
+- Blocks Maximum Free Tier and over-cap custom plans
+- Allows apply only when the **proposed** config is billing-safe
+- Existing leftover resources elsewhere in the tenancy may still show on Cost Analysis until you remove or resize them
 
-**Object/Archive Storage:**
-
-- **20 GB** combined post-trial (Always Free only)
-- 50,000 API requests/month
-- Exceeding 20 GB at trial end **deletes all objects** if not upgraded
-
-### Networking
-
-- Flexible Load Balancer: 1 (10 Mbps)
-- Network Load Balancer: 1
-- VCNs: up to 2
-- Outbound data: **10 TB/month** (ingress unlimited)
-- Site-to-Site VPN: 50 IPSec connections
-- Outbound port 25 blocked by default
-
-### Databases (optional — not generated by bootstrap script)
-
-- Autonomous AI Database: 2 instances (1 OCPU, ~20 GB each)
-- MySQL HeatWave: 1 standalone node (50 GB + 50 GB backup)
-- NoSQL: 1 DB, 3 tables, 25 GB/table
-
-## Detailed Limits Tables
-
-**Table 1: Core Compute & Storage**
-
-| Category | Resource | Exact Quota | Notes |
-|----------|----------|-------------|-------|
-| Compute (AMD) | VM.Standard.E2.1.Micro | 2 instances | 1/8 OCPU, 1 GB RAM each; single AD |
-| Compute (Arm) | VM.Standard.A1.Flex | **2 OCPU + 12 GB total** | 1×2/12 or 2×1/6; min boot 47 GB |
-| Block Volume | Boot + block + backups | 200 GB + 5 backups | Home region only |
-| Object Storage | Standard + IA + Archive | 20 GB combined | Post-trial Always Free only |
-
-#### Verbatim Idle Reclamation Policy
-
-From official OCI Always Free Resources (July 2026):
-
-> Idle Always Free compute instances may be reclaimed by Oracle if, during a 7-day period, CPU utilization (95th percentile) is less than 20%, network utilization is less than 20%, and memory utilization is less than 20% (A1 shapes only).
-
-#### Verbatim Object Storage Post-Trial Warning
-
-> If you are using more than the 20-GB limit when your Free Trial ends, all of your objects will be deleted.
-
-## Maximizing Value
-
-**Utilization target:** use Always Free resources fully without crossing limits. CloudBooter offers two profiles:
-
-| Profile | Script menu | Layout | Storage | Best for |
-|---------|-------------|--------|---------|----------|
-| **Recommended (billing-safe)** | Option 4 (default) | 1× A1 (2/12), 0 AMD | 200 GB boot @ 120 VPU | First deploy, PAYG accounts, viren070 alignment |
-| **Maximum Free Tier** | Option 5 | All available AMD + 1× A1 | Split across boots | Advanced homelab; **PAYG warning required** |
-
-### Recommended Configurations (manual / advanced)
-
-| Configuration | Instances | Compute | Storage (200 GB cap) | PAYG note |
-|---------------|-----------|---------|----------------------|-----------|
-| **Recommended (viren070)** | 1× A1 (2/12) | 2 OCPU / 12 GB | 200 GB boot only | Safest — no extra resources |
-| **Mixed official max** | 2× AMD + 1× A1 (2/12) | ~2.25 OCPU / 14 GB | 47+47+106 GB boots (example) | Extra instances may bill on PAYG |
-| **A1 split** | 2× A1 (1/6 each) | 2 OCPU / 12 GB | ~94 GB boot each | Multiple instances — billing risk on PAYG |
-| **AMD-only fallback** | 2× AMD Micro | 0.25 OCPU / 2 GB | 100 GB each | When A1 capacity unavailable |
-
-> **PAYG warning:** On Pay-As-You-Go accounts, any resource outside Always Free limits is billable. The billing-safe profile provisions **exactly one A1 instance** with **200 GB boot** and **no AMD micros** to minimize charge risk. Maximum Free Tier mode may create multiple instances — only use it if you understand the limits.
-
-### Storage Strategy
-
-- Billing-safe: **200 GB on single A1 boot volume** (no separate block volumes)
-- Maximum mode: script allocates remaining storage to A1 boot after AMD boots
-- Object storage: 20 GB for archives/backups only
-
-### Keep-Alive Scripts (Anti-Reclamation)
-
-Optional lightweight activity to stay above idle thresholds:
-
-```yaml
-runcmd:
-  - while true; do stress-ng --cpu 1 --timeout 300s; sleep 60; done &
-```
-
-## PAYG Upgrade and Billing Safety
-
-Although pure Always Free usage stays at $0, upgrading to **Pay-As-You-Go** improves A1 capacity availability. On PAYG:
-
-- Always Free limits and pricing for in-tier resources **unchanged**
-- **$100 authorization hold** on card (temporary; typically released within days)
-- You are charged for resources **above** Always Free limits
-
-### Upgrade to PAYG
-
-1. Oracle Cloud dashboard → **Billing and Cost Management**
-2. **Billing** → **Upgrade and Manage Payment**
-3. **Upgrade to Pay-As-You-Go** and follow prompts (may take up to 24 hours)
-
-### $1 Budget Alert (recommended for PAYG)
-
-1. **Billing and Cost Management** → **Cost Management** → **Budgets** → **Create Budget**
-2. Settings:
-   - Budget Name: `dont_charge_me`
-   - Budget Amount: `1`
-   - Day of month: `1`
-   - Threshold Metric: **Forecast Spend**
-   - Threshold Type: **Percentage of Budget**
-   - Threshold: **1%**
-   - Email message: `Your current usage exceeds Always Free resources. Please check your usage to avoid charges.`
-
-### Verify Cost Analysis Forecast
-
-1. **Billing and Cost Management** → **Cost Management** → **Cost Analysis**
-2. Check **Show Forecast**, set end date several months ahead, click **Apply**
-3. Confirm forecast shows **$0** for Always Free-only usage
-
-### Staying within Always Free on PAYG
-
-Oracle does not allow downgrading a tenancy from PAYG back to Always Free-only. After upgrade, stay at **$0 forecast** by keeping resources inside Always Free caps.
-
-The setup scripts apply the **recommended billing-safe profile** by default (1× A1 at 2/12, 200 GB boot, no AMD). On PAYG tenancies (detected automatically when the billing API is available), the scripts also:
-
-- Run a **usage review** after inventory when existing resources exceed that profile
-- Block **Maximum Free Tier** and over-cap custom configurations
-- Allow **terraform apply** only when the **proposed** configuration is billing-safe — legacy extras elsewhere in the tenancy do not block apply, but may still appear on Cost Analysis until removed or resized
-
-Override with `ENFORCE_LIMITS`:
-
-| Value | Behavior |
-|-------|----------|
-| `auto` (default) | Enforce billing-safe provisioning on PAYG tenancies |
+| `ENFORCE_LIMITS` | Behavior |
+|---|---|
+| `auto` (default) | Enforce on PAYG tenancies |
 | `true` | Always enforce |
 | `false` | Never enforce (power users) |
 
-See [USAGE.md](../USAGE.md) for all environment variables.
-
 ## Resizing a legacy 4/24 instance
 
-If your instance was created under the old 4 OCPU / 24 GB allowance, downsize to **2 OCPU / 12 GB** (matches [viren070’s resize walkthrough](https://guides.viren070.me/selfhosting/oracle#resizing-an-existing-instance)). The instance reboots; allow ~5–10 minutes.
+Downsize to **2 OCPU / 12 GB**. The instance reboots; plan on 5–10 minutes.
 
-### Automated (recommended)
-
-Hands-off resize via OCI CLI — no console steps:
+Automated:
 
 ```bash
 cd cloud/OCI
-
-# Resize only (auth + inventory + downsize), no Terraform
 RESIZE_LEGACY_ARM_ONLY=true ./setup_oci_terraform.sh
-
-# Full non-interactive bootstrap also auto-resizes legacy ARM when found
-NON_INTERACTIVE=true AUTO_RESIZE_LEGACY_ARM=auto ./setup_oci_terraform.sh
 ```
-
-PowerShell:
 
 ```powershell
 cd cloud/OCI
@@ -216,85 +69,33 @@ $env:RESIZE_LEGACY_ARM_ONLY = 'true'
 ```
 
 | Variable | Behavior |
-|----------|----------|
-| `AUTO_RESIZE_LEGACY_ARM=auto` (default) | Auto-resize when `NON_INTERACTIVE=true` |
+|---|---|
+| `AUTO_RESIZE_LEGACY_ARM=auto` | Resize when `NON_INTERACTIVE=true` |
 | `AUTO_RESIZE_LEGACY_ARM=true` | Always resize without prompting |
-| `AUTO_RESIZE_LEGACY_ARM=false` | Never auto; use menu option 8 (Bash) / 9 (PS) |
+| `AUTO_RESIZE_LEGACY_ARM=false` | Never auto; use the interactive resize menu |
 | `RESIZE_LEGACY_ARM_ONLY=true` | Auth, inventory, resize, exit |
 
-After usage review, interactive runs offer a single `[y/N]` prompt unless auto mode applies.
+Manual: **Compute** → instance → **Edit** → set A1 to 2 OCPU / 12 GB → save.
 
-### Manual (OCI Console)
+## Ingress defaults
 
-1. **Compute** → **Instances** → select instance → **Actions** → **More actions** → **Edit**
-2. Expand **VM.Standard.A1.Flex** shape settings
-3. Set OCPUs to **2**, memory to **12 GB**
-4. **Save changes** → confirm reboot (~5–10 minutes)
+Default security list allows SSH (port 22). Add ports with `EXTRA_INGRESS_PORTS=443,80`.
 
-## Getting Started
+`OPEN_ALL_PORTS=true` opens wide public ingress. That is a last resort for debugging, not a recommended restore path.
 
-### Manual Console Walkthrough
+## Sync checklist
 
-1. **Account Creation**: https://signup.cloud.oracle.com/ — valid credit/debit card (no virtual/prepaid). Choose home region carefully.
+When Always Free numbers change, update all of these in one PR:
 
-2. **Create instance**: Compute → Instances → Create instance
-
-3. **Image and shape**:
-   - Image: **Canonical Ubuntu 24.04**
-   - Shape: **VM.Standard.A1.Flex** — **2 OCPUs**, **12 GB** memory
-
-4. **Networking**: Create new VCN and public subnet; upload **ed25519** SSH public key (`ssh-keygen -t ed25519`)
-
-5. **Storage**: Enable custom boot volume — **200 GB**, performance **120 VPU**
-
-6. **Review and create**. SSH: `ssh -i ~/.ssh/id_ed25519 ubuntu@<public-ip>`
-
-7. **Open ports** (console): Instance → Networking → Subnet → Security List → Add Ingress Rules per port (443, 80, etc.)
-
-### Automated Terraform Bootstrap
-
-Use [`setup_oci_terraform.sh`](../setup_oci_terraform.sh) (Bash) or [`setup_oci_terraform.ps1`](../setup_oci_terraform.ps1) (PowerShell):
-
-#### Key Script Features
-
-- **Recommended default**: 1× A1 (2/12), 200 GB boot @ 120 VPU, ed25519 SSH keys
-- **Non-interactive**: `NON_INTERACTIVE=true` uses billing-safe profile (option 4)
-- **Security**: SSH (port 22) ingress by default; `OPEN_ALL_PORTS=true` or `EXTRA_INGRESS_PORTS=443,80` to customize
-- Resource inventory, Free Tier validation, capacity retry (8 attempts)
-- Generates provider.tf, variables.tf, main.tf, block_volumes.tf, cloud-init.yaml
-
-#### Running the Script
-
-```bash
-cd cloud/OCI
-
-# Interactive (default prompts to Recommended billing-safe)
-./setup_oci_terraform.sh
-
-# Non-interactive billing-safe deploy
-NON_INTERACTIVE=true AUTO_DEPLOY=true ./setup_oci_terraform.sh
-
-# Restore open-all security list (legacy behavior)
-OPEN_ALL_PORTS=true ./setup_oci_terraform.sh
-```
-
-## Synchronization Checklist
-
-When Always Free limits change, update **all** locations:
-
-- [ ] `setup_oci_terraform.sh` — `readonly FREE_TIER_*` constants
+- [ ] `setup_oci_terraform.sh` — `FREE_TIER_*` constants
 - [ ] `setup_oci_terraform.ps1` — `$FREE_TIER_*` variables
-- [ ] `src/cloudbooter/free_tier.py` — `OCIFreeTierLimits` dataclass (if present)
-- [ ] Terraform `check` blocks — generated in `variables.tf`
-- [ ] `docs/FREE_TIER_LIMITS.md` — this file (disclaimer + tables)
-- [ ] `docs/QUICKSTART.md`, `docs/OVERVIEW.md`, `README.md`
+- [ ] `src/cloudbooter/free_tier.py`
+- [ ] Terraform `check` blocks in the generator
+- [ ] This file, plus QUICKSTART / OVERVIEW / provider README
 
 ## References
 
-- [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) (official, July 2026)
+- [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 - [Oracle Cloud Free Tier](https://www.oracle.com/cloud/free/)
-- [viren070 Oracle VPS guide](https://guides.viren070.me/selfhosting/oracle) (billing-safe walkthrough)
+- [viren070 Oracle VPS guide](https://guides.viren070.me/selfhosting/oracle)
 - [OCI Free Tier FAQ](https://www.oracle.com/cloud/free/faq/)
-- [r/oraclecloud](https://www.reddit.com/r/oraclecloud/) — capacity, PAYG, idle policy discussions
-
-Verified against official Oracle documentation and viren070's guide as of **July 24, 2026**.
