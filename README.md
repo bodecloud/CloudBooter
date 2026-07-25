@@ -1,424 +1,115 @@
 # CloudBooter
 
-CloudBooter is a terminal-first bootstrapper for cloud infrastructure.
+CloudBooter bootstraps cloud accounts from the terminal. It looks at what you already have, stays inside free-tier limits where it can, writes plain Terraform you can read, and only applies when you say so.
 
-The goal is simple: give beginners a safe, repeatable “starting point” for a cloud account (network + compute + access) with sensible defaults, so they can learn by changing one thing at a time.
+Oracle Cloud (OCI) is the mature path today. GCP and Cloudflare are usable scaffolds. AWS and Azure are planned.
 
-This repository is intentionally multi-cloud in scope (AWS, Azure, GCP, OCI, Cloudflare, and others). **OCI** is fully implemented (Bash + PowerShell). **GCP** and **Cloudflare** have parallel scaffolds under `cloud/GCP/` and `cloud/Cloudflare/`. AWS and Azure remain planned.
+## Support status
 
-If you’ve ever opened a cloud console and thought “I don’t even know what I should click first,” CloudBooter is for you.
+| Provider | Status | Notes |
+|---|---|---|
+| OCI | Supported | Bash + PowerShell setup scripts, Python CLI, Always Free guardrails, optional Bitwarden multi-account resize |
+| GCP | In progress | `e2-micro` baseline under `cloud/GCP/` |
+| Cloudflare | In progress | Workers + KV + R2 + D1 free-plan baseline under `cloud/Cloudflare/` |
+| AWS | Planned | VPC + EC2 baseline |
+| Azure | Planned | Resource group + VNet + VM baseline |
 
----
+## How it works
 
-## What CloudBooter is (and isn’t)
+Same shape on every provider:
 
-### It is
-
-- A workflow that inventories what you already have, proposes a plan, then generates Terraform you can inspect and apply.
-- A set of provider implementations under `cloud/<PROVIDER>/`.
-- A terminal UX with interactive prompts today (CLI), aiming to become a full TUI over time.
-- Opinionated defaults that you can keep, tweak, or replace.
-
-### It is not
-
-- A “one-click production platform.”
-- A managed service.
-- A replacement for learning Terraform. CloudBooter generates Terraform specifically so you can learn from it.
-
----
-
-## Current support status
-
-CloudBooter is designed as a multi-provider bootstrapper, but provider support rolls out one-by-one.
-
-| Provider | Status | What you can do today |
-|---|---:|---|
-| OCI | Supported | Inventory, generate Terraform, optional auto-deploy; Bash and PowerShell |
-| GCP | In progress | Scaffold under `cloud/GCP/` (Python + Bash) |
-| Cloudflare | In progress | Scaffold under `cloud/Cloudflare/` (Workers/R2/D1/KV free-tier baseline) |
-| AWS | Planned | VPC + subnet + security group + EC2 baseline |
-| Azure | Planned | Resource group + VNet + subnet + NSG + VM baseline |
-
----
-
-## The “defaults-first” philosophy
-
-CloudBooter is built around a practical belief: beginners don’t need more options; they need a working baseline.
-
-So each provider implementation aims to ship with:
-
-1. A minimal but realistic network topology.
-2. One or more compute instances with SSH access.
-3. A clear mapping between prompts (or environment variables) and Terraform output.
-4. Idempotency: you can run it multiple times without it getting confused.
-5. Guardrails: validate inputs before generating or applying infrastructure.
-
-The baseline is intentionally conservative. Once you have a working environment, you can:
-
-- scale it up,
-- swap images,
-- split subnets,
-- add load balancers,
-- attach disks,
-- add managed databases,
-- destroy and rebuild repeatedly.
-
-That iteration loop is the point.
-
----
-
-## How it works (high-level)
-
-While each provider differs, the workflow is consistent:
-
-1. **Authenticate** using the provider’s best-supported local mechanism.
-2. **Inventory** existing resources to avoid duplicating or conflicting with what’s already in the account.
-3. **Plan** a proposed configuration (interactive prompts by default; environment variables for automation).
-4. **Validate** the plan (basic constraints, safety checks, and provider limits).
-5. **Generate Terraform** into a target directory.
-6. Optionally **run Terraform** (`init`, `plan`, and `apply`) with retry logic where the cloud is known to be flaky.
-
-The output Terraform is treated as a learning artifact as much as a deployment mechanism.
-
----
+1. Authenticate with that cloud's usual local method.
+2. Inventory existing resources.
+3. Plan a small default configuration (prompts, or env vars for automation).
+4. Validate against free-tier / free-plan caps.
+5. Generate Terraform into a directory you can inspect.
+6. Optionally run `terraform init`, `plan`, and `apply`.
 
 ## Quick start (OCI)
 
-> **Always Free A1 reduced (June 2026):** `VM.Standard.A1.Flex` is now **2 OCPU / 12 GB** (was 4 / 24). Default bootstrap is billing-safe: 1× A1, 200 GB boot. See [cloud/OCI/docs/FREE_TIER_LIMITS.md](cloud/OCI/docs/FREE_TIER_LIMITS.md).
-
-OCI lives under `cloud/OCI/`:
-
-- Bash: `setup_oci_terraform.sh` (Linux/macOS/WSL)
-- PowerShell: `setup_oci_terraform.ps1` (Windows TUI)
-
-Pick one.
-
-### Option A: Bash (recommended for Linux/macOS/WSL)
-
-From the repository root:
+Oracle cut Always Free A1 to **2 OCPU / 12 GB** in June 2026. The default profile is one A1 instance with a 200 GB boot volume. Details: [cloud/OCI/docs/FREE_TIER_LIMITS.md](cloud/OCI/docs/FREE_TIER_LIMITS.md).
 
 ```bash
 cd cloud/OCI
 ./setup_oci_terraform.sh
 ```
 
-This script is designed to be run repeatedly. It inventories resources before proposing changes and generates Terraform in the current directory.
-
-Useful environment variables (non-interactive billing-safe default):
-
-```bash
-NON_INTERACTIVE=true \
-AUTO_DEPLOY=false \
-./setup_oci_terraform.sh
-```
-
-### Option B: PowerShell (Windows)
-
-From the repository root:
+Windows:
 
 ```powershell
 cd cloud\OCI
 .\setup_oci_terraform.ps1
 ```
 
-See [cloud/OCI/USAGE.md](cloud/OCI/USAGE.md) for environment variables and menu options.
+Generate without applying:
 
----
+```bash
+NON_INTERACTIVE=true AUTO_DEPLOY=false ./setup_oci_terraform.sh
+```
 
-## Your first 10 minutes
+Then open the generated `.tf` files, run `terraform plan`, and apply only if the plan looks right.
 
-If you want the fastest learning loop, follow this sequence:
+Provider docs:
 
-1. Run CloudBooter for a provider (OCI today).
-2. Let it generate Terraform into an empty folder.
-3. Open the generated `.tf` files and read them top to bottom.
-4. Run:
-
-	```bash
-	terraform init
-	terraform plan
-	```
-
-5. If the plan matches what you expected, apply it:
-
-	```bash
-	terraform apply
-	```
-
-6. SSH into the instance(s).
-7. Change one default (instance count, shape, disk size, allowed ports, cloud-init).
-8. Re-run `terraform plan` and observe what changes.
-9. When you’re done, destroy:
-
-	```bash
-	terraform destroy
-	```
-
-This “generate → inspect → plan → apply → iterate” loop is the core CloudBooter experience.
-
----
-
-## What CloudBooter tries to bootstrap (the baseline)
-
-The baseline differs per cloud, but the intention is the same:
-
-- A dedicated network (VPC/VNet/VCN equivalent)
-- A public subnet with a route to the internet
-- A minimal firewall/security policy to allow SSH
-- One or more compute instances
-- SSH key material generated locally (so you can actually log in)
-
-From there, you can extend it into anything: private subnets, NAT, load balancers, managed databases, Kubernetes, and so on.
-
----
-
-## OCI baseline defaults (what “out of the box” means today)
-
-OCI is currently the reference implementation. It includes a conservative default plan and guardrails.
-
-At a high level, the default **Recommended (billing-safe)** profile bootstraps:
-
-- Networking (VCN + subnet + internet gateway + route table + security list with SSH ingress)
-- **1× Arm A1** instance: **2 OCPU / 12 GB**, **200 GB boot @ 120 VPU**
-- ed25519 SSH keys in `./ssh_keys/`
-- Cloud-init for basic instance initialization
-
-Optional **Maximum Free Tier** mode provisions all available AMD + A1 resources (PAYG billing risk — see docs).
-
-The OCI implementation also contains retry logic for transient capacity failures that can happen during instance provisioning.
-
-If you want the deep provider-specific walkthrough, go straight to `cloud/OCI/USAGE.md`.
-
----
-
-## Configuration surface (OCI)
-
-CloudBooter supports two styles of configuration:
-
-1. Interactive prompts (the default)
-2. Automation via flags and environment variables
-
-### Bash script configuration (OCI)
-
-The Bash implementation supports common automation toggles:
-
-- `NON_INTERACTIVE=true` — billing-safe defaults without prompts (option 4)
-- `AUTO_USE_EXISTING=true` — prefer existing discovered resources (option 1)
-- `AUTO_DEPLOY=true` — automatically run Terraform after generation
-- `OPEN_ALL_PORTS=true` — restore open-all security list (legacy behavior)
-- `EXTRA_INGRESS_PORTS=443,80` — add TCP ingress ports to default security list
-
-See [cloud/OCI/USAGE.md](cloud/OCI/USAGE.md) for the full environment variable list.
+- [OCI](cloud/OCI/README.md) · [USAGE](cloud/OCI/USAGE.md)
+- [GCP](cloud/GCP/README.md)
+- [Cloudflare](cloud/Cloudflare/README.md)
 
 ## What gets generated
 
-The exact filenames can vary per provider, but the OCI implementation generates a familiar Terraform layout (examples):
+Filenames vary by provider. OCI typically writes:
 
-- `provider.tf` (provider configuration)
-- `variables.tf` (inputs and guardrails)
-- `data_sources.tf` (images, availability domains, etc.)
-- `main.tf` (network + compute)
-- `block_volumes.tf` (optional storage)
-- `cloud-init.yaml` (instance initialization)
+- `provider.tf`, `variables.tf`, `data_sources.tf`, `main.tf`
+- optional `block_volumes.tf`
+- `cloud-init.yaml`
+- SSH keys under `./ssh_keys/` (gitignored)
 
-The idea is that you can open these files and follow the chain:
+Treat the folder as disposable while you learn. If you keep a stack, move it to its own repo and use a remote state backend.
 
-Prompt → planned config → Terraform variable → resource attribute.
+## Cost and cleanup
 
----
+Cloud accounts bill. Free tiers change. Habits that keep you out of trouble:
 
-## Working with the generated Terraform
-
-CloudBooter intentionally generates “plain Terraform,” not a hidden internal format.
-
-Practical tips:
-
-- Start by running `terraform fmt` after generation; it makes diffs easier to read.
-- Treat the generated folder as disposable while learning. Re-generate as often as needed.
-- If you decide to keep a stack long-term, consider moving it to its own repo and wiring a remote backend for state.
-- When you make manual edits, prefer editing Terraform directly rather than trying to force CloudBooter to re-generate around your changes.
-
-CloudBooter’s “best case” is that you eventually stop needing it because you’ve learned enough Terraform and cloud basics.
-
----
-
-## Troubleshooting (OCI)
-
-Common issues you’ll run into during bootstrapping:
-
-### Authentication confusion
-
-OCI has multiple auth modes (API keys, security tokens, instance principals). If you’re getting auth errors:
-
-- verify which mode you’re using (`--auth-mode` in Python, or your profile in Bash)
-- confirm the region is set (CLI uses `--region` / `OCI_AUTH_REGION`)
-- check that your OCI config files exist and are readable
-
-### Capacity failures
-
-Some regions intermittently fail to provision certain shapes. The OCI implementation includes retry logic for transient “out of capacity” style failures. If you still can’t provision:
-
-- wait and retry later
-- try a different availability domain (when applicable)
-- reduce your requested footprint
-
-### Terraform state surprises
-
-If Terraform shows resources you didn’t expect:
-
-- confirm which directory you ran Terraform in
-- confirm which backend is configured
-- don’t mix multiple stacks into the same state file
-
----
-
-## FAQ
-
-### Do I need to know Terraform first?
-
-No. But you’ll learn fastest if you treat the generated Terraform as the source of truth and read it.
-
-### Is CloudBooter safe to run in an existing account?
-
-It is designed to inventory and avoid blindly duplicating resources, but you should still treat any infrastructure tool with respect. Always review `terraform plan`.
-
-### Why a terminal UX?
-
-The terminal is the one place beginners can copy/paste commands, read logs, and inspect generated files without context switching. A TUI is planned to make the experience smoother without hiding what’s happening.
-
-### When will AWS/Azure/GCP land?
-
-There’s no fixed date. The intent is to add providers only when they meet the same bar as OCI: idempotent bootstrap with defaults, guardrails, and generated Terraform that’s understandable.
-
----
-
-## Safety: cost and cleanup
-
-CloudBooter is meant for learning. That means it should be safe to try.
-
-That said, cloud accounts are real billing systems. Even “free” offerings vary by provider and can change.
-
-Practical safety habits:
-
-1. Always review `terraform plan` before applying.
-2. Use budgets and alerts in your provider (and set them on day one).
-3. Prefer small defaults and scale deliberately.
-4. If you’re done experimenting, run `terraform destroy`.
-5. Know where your Terraform state is stored.
-
-Provider implementations may include additional guardrails that are specific to that cloud.
-
----
-
-## Terminal UI (TUI) direction
-
-CloudBooter’s UX is “terminal-first.”
-
-- Today: interactive CLI prompts (Python uses Click; Bash uses shell prompts).
-- Planned: a proper TUI that makes the flow feel consistent across providers (inventory view, plan review, apply progress, and post-run next steps).
-
-The long-term goal is one command that feels the same regardless of cloud:
-
-```text
-cloudbooter
-	-> pick provider
-	-> inventory
-	-> choose defaults
-	-> generate Terraform
-	-> (optional) apply
-```
-
----
+1. Read `terraform plan` before every apply.
+2. Set a budget alert on day one.
+3. Prefer the billing-safe defaults.
+4. Run `terraform destroy` when you are done experimenting.
+5. Know where your state file lives.
 
 ## Repository layout
-
-This repo is organized by provider:
 
 ```text
 .
 ├─ cloud/
-│  ├─ OCI/
-│  │  ├─ setup_oci_terraform.sh
-│  │  ├─ setup_oci_terraform.ps1
-│  │  ├─ USAGE.md
-│  │  ├─ src/cloudbooter/            (free-tier constants)
-│  │  ├─ tests/
-│  │  └─ docs/
-│  │     ├─ QUICKSTART.md
-│  │     ├─ OVERVIEW.md
-│  │     └─ FREE_TIER_LIMITS.md
-│  ├─ GCP/                           (in progress)
-│  └─ Cloudflare/                    (in progress)
+│  ├─ OCI/           # reference implementation
+│  ├─ GCP/           # in progress
+│  └─ Cloudflare/    # in progress
+├─ helper_scripts/   # small ops helpers (not the main product)
+├─ docs/plans/       # design notes
+├─ CONTRIBUTING.md
+├─ SECURITY.md
+├─ SUPPORT.md
+└─ LICENSE
 ```
 
-Each provider folder should be runnable on its own and contain its own docs.
+Each provider directory has its own README, usage notes, and docs.
 
----
+## Developing
 
-## Documentation map (OCI)
-
-If you’re using OCI, start here:
-
-- `cloud/OCI/USAGE.md` — command-line usage and environment variables
-- `cloud/OCI/docs/QUICKSTART.md` — step-by-step console walkthrough
-- `cloud/OCI/docs/FREE_TIER_LIMITS.md` — limits, June 2026 disclaimer, PAYG safety
-- `cloud/OCI/README.md` — provider guide
-
----
-
-## Roadmap (multi-cloud)
-
-CloudBooter’s roadmap is incremental: add providers without changing the workflow concept.
-
-### Near-term
-
-- Normalize provider folder structure (`cloud/<provider>/`) and entrypoints
-- Stabilize a consistent set of “bootstrap outputs” across providers (network, compute, SSH, Terraform layout)
-- Improve non-interactive automation knobs (env vars + flags)
-
-### Providers
-
-- AWS: VPC baseline + security group + EC2 + keypair guidance
-- Azure: resource group + VNet + subnet + NSG + VM
-- GCP: VPC + subnet + firewall + VM
-- Cloudflare: Workers (+ workers.dev) + KV + R2 + D1 free-tier baseline
-
-Each provider will start with a conservative baseline and expand only after the initial “first working deployment” is smooth.
-
----
-
-## Developing and testing
-
-Provider implementations own their own dependencies.
-
-For OCI free-tier constant tests:
+Providers own their own dependencies and tests.
 
 ```bash
-cd cloud/OCI
-python -m pytest tests/
+cd cloud/OCI && python -m pytest tests/
+cd cloud/GCP && python -m pytest tests/
+cd cloud/Cloudflare && python -m pytest tests/
 ```
 
----
+CI currently checks that `backend.tf` is not committed and shellchecks one helper script. It does not yet run the full pytest suites — run those locally before you open a PR.
 
 ## Contributing
 
-Contributions are welcome, especially:
-
-- new provider scaffolds under `cloud/<provider>/`
-- better defaults that stay beginner-friendly
-- doc improvements (clearer “why,” safer “what,” smaller “first steps”)
-- tests that protect idempotency and template generation
-
-If you’re adding a provider, aim for:
-
-1. inventory
-2. plan
-3. validate
-4. generate terraform
-5. (optional) apply
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md). Short version: work in one `cloud/<PROVIDER>/` tree, keep free-tier constants in sync across shell/Python/docs, and never commit secrets or Terraform state.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).

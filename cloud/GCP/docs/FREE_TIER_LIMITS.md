@@ -1,94 +1,71 @@
-# GCP Always Free Tier Limits
+# GCP Always Free limits
 
-Reference for all GCP Always Free Tier limits enforced by CloudBooter.
-These constants are the **canonical source of truth** — every layer must stay in sync:
-`free_tier.py` → `setup_gcp_terraform.sh` → `variables.tf` check blocks.
+Limits CloudBooter enforces for the GCP scaffold. Keep these in sync with:
 
----
+- `src/cloudbooter/free_tier.py`
+- `setup_gcp_terraform.sh` / `setup_gcp_terraform.ps1`
+- Terraform `check` blocks from the renderer
 
-## Compute Engine (e2-micro)
+Numbers below match the Python constants as of July 2026. Always re-check Google's docs when something looks off.
 
-| Resource | Free Limit | Notes |
+## Compute Engine (`e2-micro`)
+
+| Resource | Free limit | Notes |
 |---|---|---|
-| Machine type | `e2-micro` only | Any other type incurs charges |
-| vCPUs | Shared (0.25 burst) | Part of e2-micro spec |
-| RAM | 1 GB | Part of e2-micro spec |
-| Combined compute hours | **744 hrs/month** | Covers 1 instance running 24/7 |
-| Eligible regions | **us-central1, us-west1, us-east1** | Must be in one of these three |
-| Standard persistent disk | **30 GB total** | `pd-standard` only |
-| Snapshots | 5 GB | Free across all regions |
-| Network egress | 1 GB/month | To most destinations |
+| Machine type | `e2-micro` only | Other types bill |
+| Combined compute hours | 744 / month | One instance 24/7 |
+| Regions | `us-central1`, `us-west1`, `us-east1` | Only these three |
+| Standard persistent disk | 30 GB total | `pd-standard` |
+| Compute egress | 1 GB / month | Most destinations; China / Australia excluded |
 
-## Cloud Storage (GCS)
+## Cloud Storage
 
-| Resource | Free Limit | Notes |
+| Resource | Free limit | Notes |
 |---|---|---|
-| Storage | **5 GB** | US multi-region or specific US regions |
-| Eligible storage regions | **us-east1, us-west1, us-central1** | Must store in one of these |
-| Class A operations | 5,000/month | |
-| Class B operations | 50,000/month | |
-| Network egress (US) | 1 GB/month | |
+| Storage | 5 GB | US regions only |
+| Regions | `us-east1`, `us-west1`, `us-central1` | |
+| Class A ops | 5,000 / month | |
+| Class B ops | 50,000 / month | |
+| Storage egress | 100 GB / month | NA destinations; China / Australia excluded |
 
-## Secret Manager
+## Other free allotments tracked in code
 
-| Resource | Free Limit | Notes |
-|---|---|---|
-| Active secret versions | **6** | Across all secrets in the project |
-| Operations | **10,000/month** | Access + create combined |
+| Product | Free allotment |
+|---|---|
+| Secret Manager | 6 active versions, 10,000 access ops / month |
+| Cloud Build | 2,500 build-minutes / month |
+| Artifact Registry | 0.5 GB |
+| Cloud Logging | 50 GiB ingestion / project / month |
 
-## Cloud Build
+Python also defines constants for Firestore, BigQuery, Cloud Run, and Cloud Functions. Those are not part of the Iteration 1 Terraform baseline — they are there so validators can grow without inventing numbers later.
 
-| Resource | Free Limit | Notes |
-|---|---|---|
-| Build minutes | **2,500 min/month** | First-gen machines |
-
-## Artifact Registry
-
-| Resource | Free Limit | Notes |
-|---|---|---|
-| Storage | **0.5 GB** | Per region |
-
-## Cloud Logging
-
-| Resource | Free Limit | Notes |
-|---|---|---|
-| Log ingestion | **50 GiB/project/month** | |
-| Log retention | 30 days | |
-
----
-
-## Cost Traps — Resources That Are NOT Free
-
-> These are zero-cost to create but will incur charges once used.
-> CloudBooter warns on all of these.
+## Cost traps
 
 | Resource | Issue |
 |---|---|
-| External Static IP (reserved, unattached) | ~$0.01/hr while not attached to a running instance |
-| Cloud NAT | Charged per gateway per hour |
-| Cloud DNS Managed Zone | $0.20/zone/month (after first 25 queries) |
-| Load Balancer forwarding rules | Charged per rule per hour |
-| Filestore | No free tier |
-| Cloud SQL | No free tier |
-| Cloud Spanner | No free tier |
+| External static IP reserved but unattached | Bills while idle |
+| Cloud NAT | Per gateway-hour |
+| Cloud DNS managed zone | Monthly per zone |
+| Load balancer forwarding rules | Per rule-hour |
+| Filestore / Cloud SQL / Spanner | No free tier for the usual cases |
 
----
+CloudBooter warns or blocks these unless `GCP_ALLOW_PAID_RESOURCES=true`.
 
-## Idle Instance Reclamation
+## Idle instances
 
-> GCP may reclaim Always Free `e2-micro` instances if CPU utilization stays below
-> **2% for 15 minutes, 3 times over a 7-day period** (based on rolling average).
+Google may stop or reclaim underused Always Free VMs under published idle policies. Treat that as a provider rule, not something CloudBooter can fully paper over. Prefer real periodic work over synthetic CPU burners.
 
-Mitigation: run a lightweight cron task or use the `unattended-upgrades` package
-installed by the default cloud-init to keep mild background activity.
+## Sync checklist
 
----
+When Google changes a limit:
 
-## Synchronization Checklist
+- [ ] `src/cloudbooter/free_tier.py`
+- [ ] `setup_gcp_terraform.sh` `FREE_*` constants
+- [ ] `setup_gcp_terraform.ps1` `$FREE_*` variables
+- [ ] Terraform `check` blocks in the renderer
+- [ ] This file
 
-When GCP limits change, update **all four** locations:
+## Sources
 
-- [ ] `src/cloudbooter/free_tier.py` — Python frozen dataclass `GCPFreeTierLimits`
-- [ ] `setup_gcp_terraform.sh` — `readonly FREE_*` constants (Section 1)
-- [ ] `setup_gcp_terraform.ps1` — `$FREE_*` variables
-- [ ] `Terraform check blocks` — generated in `render_variables()` / `generate_variables_tf()`
+- https://cloud.google.com/free/docs/free-cloud-features
+- https://cloud.google.com/free/docs/gcp-free-tier

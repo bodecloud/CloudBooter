@@ -1,7 +1,6 @@
-# Cloudflare Free-plan Limits
+# Cloudflare Free-plan limits
 
-> **Verified 2026-07-24 UTC** via Cloudflare documentation (MCP `cloudflare-docs`).
-> Canonical constants live in `src/cloudbooter/free_tier.py`, setup scripts, and Terraform `check` blocks.
+Verified **24 July 2026** against Cloudflare docs. Canonical constants live in `src/cloudbooter/free_tier.py`, the setup scripts, and Terraform `check` blocks.
 
 ## Sources
 
@@ -60,7 +59,7 @@
 | Duration | 13,000 GB-s / day |
 | SQL rows read / written | 5M / 100k per day |
 | SQL storage | 5 GB total |
-| KV-backed DO | **Not available on Free** |
+| KV-backed DO | Not available on Free |
 
 ## Queues / Pages / Workers AI
 
@@ -70,22 +69,26 @@
 | Pages | 500 builds / month, 1 concurrent, 20,000 files / site, 100 projects |
 | Workers AI | 10,000 Neurons / day |
 
-## Cost traps (blocked / warned by CloudBooter)
+These are tracked for later modules. Iteration 1 does not generate them by default.
+
+## Cost traps
 
 | Item | Policy |
 |---|---|
-| Workers CPU > 10 ms / Paid-only features | **Block** |
-| R2 Infrequent Access | **Block** (retrieval fees) |
-| KV-backed Durable Objects | **Block** |
-| Load Balancers / Argo / Spectrum / Containers | **Block** |
+| Workers CPU > 10 ms / paid-only features | Block |
+| R2 Infrequent Access | Block (retrieval fees) |
+| KV-backed Durable Objects | Block |
+| Load Balancers / Argo / Spectrum / Containers | Block |
 
 Override: `CLOUDFLARE_ALLOW_PAID_RESOURCES=true`.
 
-## Comparison snapshot
+## Rough comparison with the other providers
 
 | Capability | OCI Always Free | GCP Always Free | Cloudflare Free |
 |---|---|---|---|
-| Long-running VM | Yes (A1 / E2 Micro) | e2-micro 744 h | No — Workers |
-| Object storage | 10 GB | 5 GB (US) | R2 10 GB (egress free) |
-| SQL | Autonomous | — | D1 5 GB |
-| KV / NoSQL | JSON | Firestore | Workers KV |
+| Long-running VM | Yes (A1 / AMD Micro) | `e2-micro` 744 h/month | No — Workers |
+| Object storage | 20 GB post-trial | 5 GB (US) | R2 10 GB (egress free) |
+| SQL-ish | Autonomous DB | — | D1 5 GB |
+| Key-value | OCI NoSQL / JSON options | Firestore | Workers KV |
+
+Use each provider's own `FREE_TIER_LIMITS.md` as the source of truth for that cloud.

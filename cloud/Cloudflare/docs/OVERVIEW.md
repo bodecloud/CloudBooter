@@ -1,34 +1,38 @@
-# Cloudflare Provider Overview
+# Cloudflare overview
+
+How the Cloudflare path works.
 
 ```mermaid
 flowchart TD
-  A[Auth: API token + Account ID] --> B[Inventory: Workers/KV/R2/D1/Zones]
+  A[Auth: API token + Account ID] --> B[Inventory Workers KV R2 D1 Zones]
   B --> C[Validate Free-plan caps]
   C --> D[Generate Terraform + worker.mjs]
   D --> E{AUTO_DEPLOY?}
-  E -- no --> F[Inspect plan manually]
-  E -- yes --> G[terraform init/plan/apply + retry]
+  E -- no --> F[Inspect plan yourself]
+  E -- yes --> G[terraform init plan apply with retry]
 ```
 
-## Why Cloudflare differs from OCI/GCP
+## Why this differs from OCI / GCP
 
-Cloudflare has no free-tier VM, VPC, or SSH baseline. CloudBooter keeps the same **workflow** (inventory → validate → generate → apply) but maps the baseline to edge primitives that exist on the Workers Free plan.
+There is no free-tier VM, VPC, or SSH baseline. CloudBooter keeps the same workflow and maps the default to Workers Free-plan primitives instead.
 
 ## Modes
 
 | `CF_MODE` | Behavior |
 |---|---|
 | `wrangler` | Preferred CLI for interactive login / local DX |
-| `npx` | Run wrangler without global install |
-| `api` | Pure `requests` against Cloudflare REST API |
+| `npx` | Run Wrangler without a global install |
+| `api` | Pure `requests` against the Cloudflare REST API |
 
-Terraform never requires wrangler — it uses the API token directly.
+Terraform talks to the API with your token. It does not need Wrangler.
 
-## Dual guardrails
+## Guardrails
 
-1. Preflight in Bash/PowerShell + Python `validate_proposed_config()`
-2. Terraform `check` blocks in `variables.tf` (CPU ≤ 10 ms, R2 Standard, DO sqlite, no LB)
+1. Preflight in Bash / PowerShell and Python `validate_proposed_config()`
+2. Terraform `check` blocks (CPU ≤ 10 ms, R2 Standard, block load balancers and other paid-only paths)
 
 ## Retry
 
-Transient Cloudflare API / Terraform failures matching rate-limit / 429 / 503 patterns are retried with exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`).
+Rate limits and transient 429 / 503 style failures are retried with exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`).
+
+See [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) and [../USAGE.md](../USAGE.md).

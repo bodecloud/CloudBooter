@@ -1,75 +1,52 @@
-# CloudBooter GCP — Overview
+# GCP overview
 
-## What It Does
+How the Google Cloud path works.
 
-CloudBooter GCP automates the provisioning of Google Compute Engine instances within
-GCP's Always Free Tier, eliminating the usual cycle of:
-
-1. Navigating the GCP Console
-2. Manually constructing Terraform HCL
-3. Discovering which region / machine type / disk size qualifies for zero-cost usage
-4. Dealing with quota or capacity errors
-
-The toolkit generates validated, idempotent Terraform files and deploys them with
-automatic retry on quota-exhaustion errors.
-
----
-
-## Architecture
-
-```
-User runs script
-  ↓
-[Prerequisites]  ──── install gcloud SDK (3-tier) + Terraform
-  ↓
-[Auth Detection] ──── SA key | WIF | Impersonation | ADC
-  ↓
-[Resource Inventory] ── VPCs, subnets, firewalls, instances, disks, static IPs, GCS
-  ↓
-[Free-Tier Validation] ─ reject configs that exceed hard limits
-  ↓
-[Terraform Generation] ─ provider.tf, variables.tf, data_sources.tf, main.tf, cloud-init.yaml
-  ↓
-[Deployment] ─────────── terraform init → plan → apply (retry on quota errors)
+```mermaid
+flowchart TD
+  A[Prereqs: gcloud or Python SDK + Terraform] --> B[Auth: SA key WIF impersonation or ADC]
+  B --> C[Inventory VPC firewalls instances disks IPs]
+  C --> D[Validate Always Free caps]
+  D --> E[Generate Terraform + cloud-init]
+  E --> F{AUTO_DEPLOY?}
+  F -- no --> G[Inspect plan yourself]
+  F -- yes --> H[terraform init plan apply with quota retry]
 ```
 
----
+## Why this exists
+
+Picking a free-eligible region, machine type, and disk size by hand is easy to get wrong. CloudBooter inventories the project, rejects plans that break Always Free caps, and writes ordinary Terraform.
 
 ## Layers
 
-| Layer | Description |
+| Layer | Role |
 |---|---|
-| `setup_gcp_terraform.sh` | Primary — Bash orchestrator, all logic inline + calls Python renderer |
-| `setup_gcp_terraform.ps1` | Windows — PowerShell equivalent |
-| `src/cloudbooter/` | Python package — renderers, auth, inventory, validation |
-| Generated `.tf` files | Terraform HCL written to the output directory |
+| `setup_gcp_terraform.sh` | Primary Bash orchestrator |
+| `setup_gcp_terraform.ps1` | Windows equivalent |
+| `src/cloudbooter/` | Renderers, auth, inventory, validation, Click CLI |
+| Generated `.tf` files | Written at run time |
 
----
+## Auth order
 
-## Auth Patterns (in precedence order)
+1. Service account or WIF file via `GCP_CREDENTIALS_FILE`
+2. Impersonation (`GCP_IMPERSONATE_SA` in scripts, `GCP_IMPERSONATE_SERVICE_ACCOUNT` in the Python CLI)
+3. Application Default Credentials
 
-1. **SA Key** — `GCP_CREDENTIALS_FILE` points to a `service_account` JSON
-2. **WIF** — `GCP_CREDENTIALS_FILE` points to an `external_account` JSON
-3. **Impersonation** — `GCP_IMPERSONATE_SA` set to a service account email
-4. **ADC** — `gcloud auth application-default login` or metadata server
+## Modes
 
----
-
-## GCP Mode
-
-| `GCP_MODE` | Behaviour |
+| `GCP_MODE` | Behavior |
 |---|---|
-| `gcloud` (default) | Uses `gcloud` CLI for all API calls |
-| `python` | Uses Google Python SDK — no `gcloud` required |
+| `gcloud` (default) | Uses the `gcloud` CLI |
+| `python` | Uses the Google Python SDKs — no `gcloud` required |
 
-The Bash script automatically falls back to `python` mode if gcloud cannot be installed.
+The Bash script switches to `python` if it cannot install the SDK.
 
----
+## Design choices
 
-## Key Design Decisions
+- Safe to re-run: inventory first, prefer existing resources when asked
+- Free-tier checks in shell, Python, and Terraform
+- No committed `.tf` files in git
+- Retries on quota / capacity style errors
+- Warns about reserved-but-unattached static IPs and other cost traps
 
-- **Idempotent** — running the script twice with the same config is safe
-- **Free-tier enforcement** — three layers of checks (Bash → Python → Terraform `check` blocks)
-- **No committed Terraform files** — all `.tf` files are generated on the fly
-- **Retry on quota errors** — exponential backoff up to `RETRY_MAX_ATTEMPTS` attempts
-- **Billing trap warnings** — reserved-but-unattached static IPs are flagged immediately
+See [FREE_TIER_LIMITS.md](FREE_TIER_LIMITS.md) and [../USAGE.md](../USAGE.md).

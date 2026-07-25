@@ -3,56 +3,42 @@ name: CloudBooter
 last_updated: 2026-07-24
 ---
 
-# CloudBooter Strategy
+# CloudBooter strategy
 
-## Target problem
+## Problem
 
-Beginners and operators with multiple cloud accounts cannot safely stay inside Always Free limits after provider policy changes (e.g. OCI A1 reduced to 2 OCPU / 12 GB in June 2026). Manual console checks do not scale across tenancies, and PAYG accounts silently bill when legacy resources remain over cap.
+People who run several free-tier cloud accounts cannot keep them inside current limits by clicking around the console. Provider rules change (Oracle cut Always Free A1 to 2 OCPU / 12 GB in June 2026). Pay-as-you-go accounts quietly bill when leftover resources sit over the free caps.
 
-## Our approach
+## Approach
 
-Terminal-first, inspect-before-apply bootstrap: inventory what exists, enforce billing-safe caps in non-interactive paths, and resize or block provisioning before Terraform apply — with credentials sourced from the operator's vault or explicit env, never hardcoded.
+Terminal-first, inspect-before-apply:
 
-## Who it's for
+- Inventory what already exists.
+- Enforce billing-safe caps on non-interactive paths.
+- Resize or block unsafe plans before `terraform apply`.
+- Pull credentials from the operator's vault or explicit environment variables — never hardcode them in the repo.
 
-**Primary:** Homelab operator — They're hiring CloudBooter to keep several Oracle (and future GCP / Cloudflare) accounts inside Always Free / free-plan limits without living in the console.
+## Who it is for
 
-**Secondary:** Maintainer — They're hiring CloudBooter to encode policy (strict limits, resize-only fast paths) as repeatable scripts and tests.
+- Homelab operators who want several Oracle (and later GCP / Cloudflare) accounts to stay inside free limits without living in the console.
+- Maintainers who want those rules encoded as scripts and tests instead of tribal knowledge.
 
-## Key metrics
-
-- **Tenancies audit-clean after run** — Count of accounts with zero blocking audit findings post-resize; measured from `cloudbooter.cli audit` / migration JSON reports
-- **Legacy ARM instances at 2/12** — A1 instances still above billing-safe shape after orchestrator run; from resize outcomes in reports
-- **Blocked unsafe applies** — Terraform apply attempts rejected when strict limits active; from setup script exit codes in CI or logs
-
-## Tracks
+## Work tracks
 
 ### OCI billing-safe automation
 
-Inventory, strict limits, legacy ARM resize, Bitwarden multi-account orchestration, and session/API-key auth paths.
-
-_Why it serves the approach:_ OCI is the only fully implemented provider and the immediate PAYG risk surface.
+Inventory, strict limits, legacy ARM resize, Bitwarden multi-account orchestration, and session / API-key auth. OCI is the only fully implemented provider and the place where PAYG risk shows up first.
 
 ### Multi-cloud scaffold
 
-GCP and Cloudflare scaffolds and shared Python patterns (`free_tier`, CLI hooks) portable across providers.
+GCP and Cloudflare share the same Python patterns (`free_tier`, CLI hooks) so the billing-safe idea is reusable instead of one-off bash per cloud.
 
-_Why it serves the approach:_ Keeps the billing-safe pattern reusable instead of one-off bash per cloud.
+### Credential discovery
 
-### Credential discovery and auth
+Bitwarden discovery, offline export, matching cloud account names to vault items, and console session auth as a fallback. Resize across many accounts does not work without reliable non-interactive auth.
 
-Bitwarden discovery, offline export, cloud account name vs vault slug, console session auth fallback.
-
-_Why it serves the approach:_ Resize cannot run without reliable, non-interactive auth across many accounts.
-
-## Not working on
+## Out of scope
 
 - One-click production platforms or managed hosting
 - Creating API keys inside customer consoles during batch runs
-- Storing or committing secrets in the repository
-
-## Marketing
-
-**One-liner:** CloudBooter helps you bootstrap cloud infrastructure from the terminal with billing-safe defaults and inspect-before-apply Terraform.
-
-**Key message:** Start from what you already have, see the plan, then apply — with Always Free enforcement built in for Oracle Cloud today.
+- Storing or committing secrets in this repository

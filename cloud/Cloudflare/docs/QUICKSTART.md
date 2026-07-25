@@ -1,4 +1,4 @@
-# Cloudflare Quick Start
+# Cloudflare quick start
 
 ## 1. Create an API token
 
@@ -8,7 +8,7 @@
 
 ## 2. Find your Account ID
 
-Dashboard → Workers & Pages → Overview → Account ID (right sidebar), or any account URL.
+Dashboard → **Workers & Pages** → Overview → Account ID in the sidebar, or read it from any account URL.
 
 ## 3. Run CloudBooter
 
@@ -34,15 +34,15 @@ python -m cloudbooter deploy \
 ## 4. Inspect and apply
 
 ```bash
-cd out   # or current dir if using the shell script
+cd out   # or stay in cloud/Cloudflare if the shell script wrote here
 terraform init
 terraform plan
-terraform apply   # when ready
+terraform apply   # when the plan looks right
 ```
 
 ## 5. Call your Worker
 
-After apply, open `https://<worker-name>.<your-subdomain>.workers.dev` (subdomain is account-specific; see [workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)).
+After apply, open `https://<worker-name>.<subdomain>.workers.dev`. Subdomains are account-specific — see [workers.dev routing](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/).
 
 ## Cleanup
 
