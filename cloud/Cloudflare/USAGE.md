@@ -69,6 +69,8 @@ Prefer passing the token on the CLI or via `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_
 
 Terraform uses provider `cloudflare/cloudflare` `~> 5` with `api_token`. Wrangler is not required for apply.
 
+Both setup scripts invoke the package CLI to generate files. The PowerShell script stops if dependency installation, generation, or any Terraform command fails, so a failed plan cannot apply an older saved plan. A caller-supplied `TF_VAR_cloudflare_api_token` takes precedence for Terraform.
+
 ## Generated files
 
 - `provider.tf` — Cloudflare provider

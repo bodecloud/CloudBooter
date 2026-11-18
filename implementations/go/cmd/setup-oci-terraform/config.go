@@ -1,331 +1,211 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
-	"strings"
 )
 
-// Load existing configuration from variables.tf
+// Restore all generated configuration before changing the active state.
 func (app *App) loadExistingConfig() error {
-	if _, err := os.Stat("variables.tf"); os.IsNotExist(err) {
-		return fmt.Errorf("variables.tf not found")
-	}
-
-	printStatus("Loading existing configuration from variables.tf...")
-
 	data, err := os.ReadFile("variables.tf")
-	if err != nil {
-		return fmt.Errorf("failed to read variables.tf: %w", err)
-	}
-
+	if err != nil { return err }
 	content := string(data)
-
-	// Parse AMD instance count
-	amdCountRe := regexp.MustCompile(`amd_micro_instance_count\s*=\s*(\d+)`)
-	if matches := amdCountRe.FindStringSubmatch(content); len(matches) > 1 {
-		if count, err := strconv.Atoi(matches[1]); err == nil {
-			app.InstanceConfig.AMDMicroInstanceCount = count
-		}
+	config := &InstanceConfig{AMDMicroBootVolumeSizeGB: 50}
+	for name, target := range map[string]*int{
+		"amd_micro_instance_count": &config.AMDMicroInstanceCount,
+		"amd_micro_boot_volume_size_gb": &config.AMDMicroBootVolumeSizeGB,
+		"arm_flex_instance_count": &config.ARMFlexInstanceCount,
+	} {
+		match := regexp.MustCompile(`(?m)^\s*` + name + `\s*=\s*(\d+)\s*$`).FindStringSubmatch(content)
+		if len(match) != 2 { return fmt.Errorf("missing configuration value %s", name) }
+		*target, err = strconv.Atoi(match[1])
+		if err != nil { return fmt.Errorf("invalid %s: %w", name, err) }
 	}
-
-	// Parse ARM instance count
-	armCountRe := regexp.MustCompile(`arm_flex_instance_count\s*=\s*(\d+)`)
-	if matches := armCountRe.FindStringSubmatch(content); len(matches) > 1 {
-		if count, err := strconv.Atoi(matches[1]); err == nil {
-			app.InstanceConfig.ARMFlexInstanceCount = count
-		}
+	for name, target := range map[string]interface{}{
+		"amd_micro_hostnames": &config.AMDMicroHostnames,
+		"arm_flex_hostnames": &config.ARMFlexHostnames,
+		"arm_flex_ocpus_per_instance": &config.ARMFlexOCPUsPerInstance,
+		"arm_flex_memory_per_instance": &config.ARMFlexMemoryPerInstance,
+		"arm_flex_boot_volume_size_gb": &config.ARMFlexBootVolumeSizeGB,
+		"arm_block_volume_sizes": &config.ARMFlexBlockVolumes,
+	} {
+		match := regexp.MustCompile(`(?m)^\s*` + name + `\s*=\s*(\[[^\]\r\n]*\])\s*$`).FindStringSubmatch(content)
+		if len(match) != 2 { return fmt.Errorf("missing configuration array %s", name) }
+		if err := json.Unmarshal([]byte(match[1]), target); err != nil { return fmt.Errorf("invalid %s: %w", name, err) }
 	}
-
-	// Parse hostnames (simplified - would need more robust parsing)
-	amdHostnamesRe := regexp.MustCompile(`amd_micro_hostnames\s*=\s*\[([^\]]+)\]`)
-	if matches := amdHostnamesRe.FindStringSubmatch(content); len(matches) > 1 {
-		hostnamesStr := strings.TrimSpace(matches[1])
-		hostnames := strings.Split(hostnamesStr, ",")
-		for _, h := range hostnames {
-			h = strings.Trim(strings.TrimSpace(h), "\"")
-			if h != "" {
-				app.InstanceConfig.AMDMicroHostnames = append(app.InstanceConfig.AMDMicroHostnames, h)
-			}
-		}
-	}
-
-	armHostnamesRe := regexp.MustCompile(`arm_flex_hostnames\s*=\s*\[([^\]]+)\]`)
-	if matches := armHostnamesRe.FindStringSubmatch(content); len(matches) > 1 {
-		hostnamesStr := strings.TrimSpace(matches[1])
-		hostnames := strings.Split(hostnamesStr, ",")
-		for _, h := range hostnames {
-			h = strings.Trim(strings.TrimSpace(h), "\"")
-			if h != "" {
-				app.InstanceConfig.ARMFlexHostnames = append(app.InstanceConfig.ARMFlexHostnames, h)
-			}
-		}
-	}
-
-	printSuccess(fmt.Sprintf("Loaded configuration: %dx AMD, %dx ARM", 
-		app.InstanceConfig.AMDMicroInstanceCount, app.InstanceConfig.ARMFlexInstanceCount))
+	if err := validateInstanceConfig(config); err != nil { return err }
+	app.InstanceConfig = config
+	printSuccess(fmt.Sprintf("Loaded configuration: %dx AMD, %dx ARM", config.AMDMicroInstanceCount, config.ARMFlexInstanceCount))
 	return nil
 }
 
-// Configure from existing instances
+func sortedInstanceIDs(instances map[string]InstanceInfo) []string {
+	ids := make([]string, 0, len(instances))
+	for id := range instances { ids = append(ids, id) }
+	sort.Strings(ids)
+	return ids
+}
+
 func (app *App) configureFromExistingInstances() {
 	printStatus("Configuring based on existing instances...")
-
-	// Use existing AMD instances
-	app.InstanceConfig.AMDMicroInstanceCount = len(app.Resources.AMDInstances)
-	app.InstanceConfig.AMDMicroHostnames = []string{}
-
-	for _, instance := range app.Resources.AMDInstances {
-		app.InstanceConfig.AMDMicroHostnames = append(app.InstanceConfig.AMDMicroHostnames, instance.Name)
+	config := &InstanceConfig{AMDMicroBootVolumeSizeGB: 50}
+	for _, id := range sortedInstanceIDs(app.Resources.AMDInstances) {
+		config.AMDMicroHostnames = append(config.AMDMicroHostnames, app.Resources.AMDInstances[id].Name)
 	}
-
-	// Use existing ARM instances
-	app.InstanceConfig.ARMFlexInstanceCount = len(app.Resources.ARMInstances)
-	app.InstanceConfig.ARMFlexHostnames = []string{}
-	app.InstanceConfig.ARMFlexOCPUsPerInstance = []int{}
-	app.InstanceConfig.ARMFlexMemoryPerInstance = []int{}
-	app.InstanceConfig.ARMFlexBootVolumeSizeGB = []int{}
-
-	for _, instance := range app.Resources.ARMInstances {
-		app.InstanceConfig.ARMFlexHostnames = append(app.InstanceConfig.ARMFlexHostnames, instance.Name)
-		app.InstanceConfig.ARMFlexOCPUsPerInstance = append(app.InstanceConfig.ARMFlexOCPUsPerInstance, instance.OCPUs)
-		app.InstanceConfig.ARMFlexMemoryPerInstance = append(app.InstanceConfig.ARMFlexMemoryPerInstance, instance.Memory)
-		app.InstanceConfig.ARMFlexBootVolumeSizeGB = append(app.InstanceConfig.ARMFlexBootVolumeSizeGB, 50) // Default
+	config.AMDMicroInstanceCount = len(config.AMDMicroHostnames)
+	for _, id := range sortedInstanceIDs(app.Resources.ARMInstances) {
+		instance := app.Resources.ARMInstances[id]
+		config.ARMFlexHostnames = append(config.ARMFlexHostnames, instance.Name)
+		config.ARMFlexOCPUsPerInstance = append(config.ARMFlexOCPUsPerInstance, instance.OCPUs)
+		config.ARMFlexMemoryPerInstance = append(config.ARMFlexMemoryPerInstance, instance.Memory)
+		config.ARMFlexBootVolumeSizeGB = append(config.ARMFlexBootVolumeSizeGB, 50)
+		config.ARMFlexBlockVolumes = append(config.ARMFlexBlockVolumes, 0)
 	}
-
-	// Set defaults if no instances exist
-	if app.InstanceConfig.AMDMicroInstanceCount == 0 && app.InstanceConfig.ARMFlexInstanceCount == 0 {
-		printStatus("No existing instances found, using default configuration")
-		app.InstanceConfig.AMDMicroInstanceCount = 0
-		app.InstanceConfig.ARMFlexInstanceCount = 1
-		app.InstanceConfig.ARMFlexOCPUsPerInstance = []int{4}
-		app.InstanceConfig.ARMFlexMemoryPerInstance = []int{24}
-		app.InstanceConfig.ARMFlexBootVolumeSizeGB = []int{200}
-		app.InstanceConfig.ARMFlexHostnames = []string{"arm-instance-1"}
-		app.InstanceConfig.ARMFlexBlockVolumes = []int{0}
+	config.ARMFlexInstanceCount = len(config.ARMFlexHostnames)
+	if config.AMDMicroInstanceCount == 0 && config.ARMFlexInstanceCount == 0 {
+		_, cpus, memory, storage := app.calculateAvailableResources()
+		if app.OCIConfig.UbuntuARMFlexImageOCID != "" && cpus > 0 && memory > 0 && storage >= FreeTierMinBootVolumeGB {
+			config.ARMFlexInstanceCount = 1
+			config.ARMFlexOCPUsPerInstance = []int{cpus}
+			config.ARMFlexMemoryPerInstance = []int{memory}
+			config.ARMFlexBootVolumeSizeGB = []int{storage}
+			config.ARMFlexHostnames = []string{"arm-instance-1"}
+			config.ARMFlexBlockVolumes = []int{0}
+		}
 	}
-
-	app.InstanceConfig.AMDMicroBootVolumeSizeGB = 50
-
-	printSuccess(fmt.Sprintf("Configuration: %dx AMD, %dx ARM", 
-		app.InstanceConfig.AMDMicroInstanceCount, app.InstanceConfig.ARMFlexInstanceCount))
+	app.InstanceConfig = config
 }
 
-// Calculate available resources
+func nonNegative(value int) int {
+	if value < 0 { return 0 }
+	return value
+}
+
+func lesser(a, b int) int {
+	if a < b { return a }
+	return b
+}
+
 func (app *App) calculateAvailableResources() (int, int, int, int) {
-	usedAMD := len(app.Resources.AMDInstances)
-	usedARMOCPUs := 0
-	usedARMMemory := 0
-	usedStorage := 0
-
+	usedOCPUs, usedMemory, usedStorage := 0, 0, 0
 	for _, instance := range app.Resources.ARMInstances {
-		usedARMOCPUs += instance.OCPUs
-		usedARMMemory += instance.Memory
+		usedOCPUs += instance.OCPUs
+		usedMemory += instance.Memory
 	}
-
-	for _, boot := range app.Resources.BootVolumes {
-		usedStorage += boot.Size
-	}
-
-	for _, block := range app.Resources.BlockVolumes {
-		usedStorage += block.Size
-	}
-
-	availableAMD := FreeTierMaxAMDInstances - usedAMD
-	availableARMOCPUs := FreeTierMaxARMOCPUs - usedARMOCPUs
-	availableARMMemory := FreeTierMaxARMMemoryGB - usedARMMemory
-	availableStorage := FreeTierMaxStorageGB - usedStorage
-
-	return availableAMD, availableARMOCPUs, availableARMMemory, availableStorage
+	for _, volume := range app.Resources.BootVolumes { usedStorage += volume.Size }
+	for _, volume := range app.Resources.BlockVolumes { usedStorage += volume.Size }
+	return nonNegative(FreeTierMaxAMDInstances-len(app.Resources.AMDInstances)),
+		nonNegative(FreeTierMaxARMOCPUs-usedOCPUs), nonNegative(FreeTierMaxARMMemoryGB-usedMemory),
+		nonNegative(FreeTierMaxStorageGB-usedStorage)
 }
 
-// Prompt configuration
 func (app *App) promptConfiguration() error {
 	printHeader("INSTANCE CONFIGURATION")
-
-	availableAMD, availableARMOCPUs, availableARMMemory, availableStorage := app.calculateAvailableResources()
-
-	fmt.Println("\033[1mAvailable Free Tier Resources:\033[0m")
-	fmt.Printf("  • AMD instances:  %d available (max %d)\n", availableAMD, FreeTierMaxAMDInstances)
-	fmt.Printf("  • ARM OCPUs:      %d available (max %d)\n", availableARMOCPUs, FreeTierMaxARMOCPUs)
-	fmt.Printf("  • ARM Memory:     %dGB available (max %dGB)\n", availableARMMemory, FreeTierMaxARMMemoryGB)
-	fmt.Printf("  • Storage:        %dGB available (max %dGB)\n", availableStorage, FreeTierMaxStorageGB)
-	fmt.Println()
-
-	// Check if we have existing config
-	hasExistingConfig := false
-	if err := app.loadExistingConfig(); err == nil {
-		hasExistingConfig = true
+	amd, cpus, memory, storage := app.calculateAvailableResources()
+	fmt.Printf("Available: %d AMD instances, %d ARM OCPUs, %dGB RAM, %dGB storage\n", amd, cpus, memory, storage)
+	hasExisting := app.loadExistingConfig() == nil
+	printStatus("1) Use existing instances; 2) Use saved configuration; 3) Configure new instances; 4) Maximum Free Tier")
+	choice := 1
+	if !app.Config.AutoUseExisting && !app.Config.NonInteractive {
+		choice, _ = promptIntRange("Choose configuration (1-4)", "1", 1, 4)
 	}
-
-	printStatus("Configuration options:")
-	fmt.Println("  1) Use existing instances (manage what's already deployed)")
-	if hasExistingConfig {
-		fmt.Println("  2) Use saved configuration from variables.tf")
-	} else {
-		fmt.Println("  2) Use saved configuration from variables.tf (not available)")
-	}
-	fmt.Println("  3) Configure new instances (respecting Free Tier limits)")
-	fmt.Println("  4) Maximum Free Tier configuration (use all available resources)")
-	fmt.Println()
-
-	var choice int
-	if app.Config.AutoUseExisting || app.Config.NonInteractive {
-		choice = 1
-		printStatus("Auto mode: Using existing instances")
-	} else {
-		choiceStr := promptWithDefault("Choose configuration (1-4)", "1")
-		var err error
-		choice, err = strconv.Atoi(choiceStr)
-		if err != nil || choice < 1 || choice > 4 {
-			choice = 1
-		}
-	}
-
 	switch choice {
-	case 1:
-		app.configureFromExistingInstances()
 	case 2:
-		if hasExistingConfig {
-			printSuccess("Using saved configuration")
-		} else {
-			printError("No saved configuration available")
-			app.configureFromExistingInstances()
-		}
+		if !hasExisting { return fmt.Errorf("no valid saved configuration") }
 	case 3:
-		app.configureCustomInstances(availableAMD, availableARMOCPUs, availableARMMemory, availableStorage)
+		app.configureCustomInstances(amd, cpus, memory, storage)
 	case 4:
-		app.configureMaximumFreeTier(availableAMD, availableARMOCPUs, availableARMMemory, availableStorage)
+		app.configureMaximumFreeTier(amd, cpus, memory, storage)
 	default:
 		app.configureFromExistingInstances()
 	}
-
-	return nil
+	return validateInstanceConfig(app.InstanceConfig)
 }
 
-// Configure custom instances
 func (app *App) configureCustomInstances(availableAMD, availableARMOCPUs, availableARMMemory, availableStorage int) {
-	printStatus("Custom instance configuration...")
-
-	// AMD instances
-	if availableAMD > 0 && !app.Config.NonInteractive {
-		count, err := promptIntRange(fmt.Sprintf("Number of AMD instances (0-%d)", availableAMD), "0", 0, availableAMD)
-		if err == nil {
-			app.InstanceConfig.AMDMicroInstanceCount = count
-		}
-	} else {
-		app.InstanceConfig.AMDMicroInstanceCount = 0
+	config := &InstanceConfig{AMDMicroBootVolumeSizeGB: 50}
+	app.InstanceConfig = config
+	maxAMD := lesser(availableAMD, availableStorage/50)
+	if app.OCIConfig.UbuntuImageOCID == "" { maxAMD = 0 }
+	if maxAMD > 0 && !app.Config.NonInteractive {
+		config.AMDMicroInstanceCount, _ = promptIntRange(fmt.Sprintf("AMD instances (0-%d)", maxAMD), "0", 0, maxAMD)
 	}
-
-	app.InstanceConfig.AMDMicroHostnames = []string{}
-	if app.InstanceConfig.AMDMicroInstanceCount > 0 {
-		app.InstanceConfig.AMDMicroBootVolumeSizeGB = 50
-		for i := 1; i <= app.InstanceConfig.AMDMicroInstanceCount; i++ {
-			hostname := fmt.Sprintf("amd-instance-%d", i)
-			if !app.Config.NonInteractive {
-				hostname = promptWithDefault(fmt.Sprintf("Hostname for AMD instance %d", i), hostname)
-			}
-			app.InstanceConfig.AMDMicroHostnames = append(app.InstanceConfig.AMDMicroHostnames, hostname)
-		}
+	for i := 0; i < config.AMDMicroInstanceCount; i++ {
+		name := fmt.Sprintf("amd-instance-%d", i+1)
+		if !app.Config.NonInteractive { name = promptWithDefault("AMD hostname", name) }
+		config.AMDMicroHostnames = append(config.AMDMicroHostnames, name)
 	}
-
-	// ARM instances
-	if app.OCIConfig.UbuntuARMFlexImageOCID != "" && availableARMOCPUs > 0 {
-		if !app.Config.NonInteractive {
-			count, err := promptIntRange("Number of ARM instances (0-4)", "1", 0, 4)
-			if err == nil {
-				app.InstanceConfig.ARMFlexInstanceCount = count
-			} else {
-				app.InstanceConfig.ARMFlexInstanceCount = 1
-			}
-		} else {
-			app.InstanceConfig.ARMFlexInstanceCount = 1
-		}
-
-		app.InstanceConfig.ARMFlexHostnames = []string{}
-		app.InstanceConfig.ARMFlexOCPUsPerInstance = []int{}
-		app.InstanceConfig.ARMFlexMemoryPerInstance = []int{}
-		app.InstanceConfig.ARMFlexBootVolumeSizeGB = []int{}
-		app.InstanceConfig.ARMFlexBlockVolumes = []int{}
-
-		remainingOCPUs := availableARMOCPUs
-		remainingMemory := availableARMMemory
-
-		for i := 1; i <= app.InstanceConfig.ARMFlexInstanceCount; i++ {
-			hostname := fmt.Sprintf("arm-instance-%d", i)
-			if !app.Config.NonInteractive {
-				hostname = promptWithDefault(fmt.Sprintf("Hostname for ARM instance %d", i), hostname)
-			}
-			app.InstanceConfig.ARMFlexHostnames = append(app.InstanceConfig.ARMFlexHostnames, hostname)
-
-			ocpus := remainingOCPUs
-			if !app.Config.NonInteractive {
-				ocpus, _ = promptIntRange(fmt.Sprintf("  OCPUs (1-%d)", remainingOCPUs), 
-					fmt.Sprintf("%d", remainingOCPUs), 1, remainingOCPUs)
-			}
-			app.InstanceConfig.ARMFlexOCPUsPerInstance = append(app.InstanceConfig.ARMFlexOCPUsPerInstance, ocpus)
-			remainingOCPUs -= ocpus
-
-			maxMemory := ocpus * 6
-			if maxMemory > remainingMemory {
-				maxMemory = remainingMemory
-			}
-			memory := maxMemory
-			if !app.Config.NonInteractive {
-				memory, _ = promptIntRange(fmt.Sprintf("  Memory GB (1-%d)", maxMemory), 
-					fmt.Sprintf("%d", maxMemory), 1, maxMemory)
-			}
-			app.InstanceConfig.ARMFlexMemoryPerInstance = append(app.InstanceConfig.ARMFlexMemoryPerInstance, memory)
-			remainingMemory -= memory
-
-			boot := 50
-			if !app.Config.NonInteractive {
-				boot, _ = promptIntRange("  Boot volume GB (50-200)", "50", 50, 200)
-			}
-			app.InstanceConfig.ARMFlexBootVolumeSizeGB = append(app.InstanceConfig.ARMFlexBootVolumeSizeGB, boot)
-			app.InstanceConfig.ARMFlexBlockVolumes = append(app.InstanceConfig.ARMFlexBlockVolumes, 0)
-		}
-	} else {
-		app.InstanceConfig.ARMFlexInstanceCount = 0
+	remainingStorage := availableStorage - config.AMDMicroInstanceCount*50
+	maxARM := lesser(FreeTierMaxARMInstances, lesser(availableARMOCPUs, lesser(availableARMMemory, remainingStorage/FreeTierMinBootVolumeGB)))
+	if app.OCIConfig.UbuntuARMFlexImageOCID == "" || maxARM <= 0 { return }
+	config.ARMFlexInstanceCount = 1
+	if !app.Config.NonInteractive {
+		config.ARMFlexInstanceCount, _ = promptIntRange(fmt.Sprintf("ARM instances (0-%d)", maxARM), "1", 0, maxARM)
+	}
+	remainingOCPUs, remainingMemory := availableARMOCPUs, availableARMMemory
+	for i := 0; i < config.ARMFlexInstanceCount; i++ {
+		remainingInstances := config.ARMFlexInstanceCount-i-1
+		name := fmt.Sprintf("arm-instance-%d", i+1)
+		if !app.Config.NonInteractive { name = promptWithDefault("ARM hostname", name) }
+		maxOCPUs := remainingOCPUs-remainingInstances
+		ocpus := maxOCPUs
+		if !app.Config.NonInteractive { ocpus, _ = promptIntRange(fmt.Sprintf("OCPUs (1-%d)", maxOCPUs), strconv.Itoa(maxOCPUs), 1, maxOCPUs) }
+		maxMemory := lesser(ocpus*6, remainingMemory-remainingInstances)
+		memory := maxMemory
+		if !app.Config.NonInteractive { memory, _ = promptIntRange(fmt.Sprintf("Memory GB (1-%d)", maxMemory), strconv.Itoa(maxMemory), 1, maxMemory) }
+		maxBoot := remainingStorage-remainingInstances*FreeTierMinBootVolumeGB
+		boot := lesser(50, maxBoot)
+		if !app.Config.NonInteractive { boot, _ = promptIntRange(fmt.Sprintf("Boot GB (%d-%d)", FreeTierMinBootVolumeGB, maxBoot), strconv.Itoa(boot), FreeTierMinBootVolumeGB, maxBoot) }
+		config.ARMFlexHostnames = append(config.ARMFlexHostnames, name)
+		config.ARMFlexOCPUsPerInstance = append(config.ARMFlexOCPUsPerInstance, ocpus)
+		config.ARMFlexMemoryPerInstance = append(config.ARMFlexMemoryPerInstance, memory)
+		config.ARMFlexBootVolumeSizeGB = append(config.ARMFlexBootVolumeSizeGB, boot)
+		config.ARMFlexBlockVolumes = append(config.ARMFlexBlockVolumes, 0)
+		remainingOCPUs -= ocpus
+		remainingMemory -= memory
+		remainingStorage -= boot
 	}
 }
 
-// Configure maximum free tier
 func (app *App) configureMaximumFreeTier(availableAMD, availableARMOCPUs, availableARMMemory, availableStorage int) {
-	printStatus("Configuring maximum Free Tier utilization...")
-
-	// Use all available AMD instances
-	app.InstanceConfig.AMDMicroInstanceCount = availableAMD
-	app.InstanceConfig.AMDMicroBootVolumeSizeGB = 50
-	app.InstanceConfig.AMDMicroHostnames = []string{}
-	for i := 1; i <= app.InstanceConfig.AMDMicroInstanceCount; i++ {
-		app.InstanceConfig.AMDMicroHostnames = append(app.InstanceConfig.AMDMicroHostnames, fmt.Sprintf("amd-instance-%d", i))
+	config := &InstanceConfig{AMDMicroBootVolumeSizeGB: 50}
+	app.InstanceConfig = config
+	if app.OCIConfig.UbuntuImageOCID != "" { config.AMDMicroInstanceCount = lesser(availableAMD, availableStorage/50) }
+	for i := 0; i < config.AMDMicroInstanceCount; i++ { config.AMDMicroHostnames = append(config.AMDMicroHostnames, fmt.Sprintf("amd-instance-%d", i+1)) }
+	remainingStorage := availableStorage-config.AMDMicroInstanceCount*50
+	if app.OCIConfig.UbuntuARMFlexImageOCID != "" && availableARMOCPUs > 0 && availableARMMemory > 0 && remainingStorage >= FreeTierMinBootVolumeGB {
+		config.ARMFlexInstanceCount = 1
+		config.ARMFlexOCPUsPerInstance = []int{availableARMOCPUs}
+		config.ARMFlexMemoryPerInstance = []int{lesser(availableARMMemory, availableARMOCPUs*6)}
+		config.ARMFlexBootVolumeSizeGB = []int{remainingStorage}
+		config.ARMFlexHostnames = []string{"arm-instance-1"}
+		config.ARMFlexBlockVolumes = []int{0}
 	}
+}
 
-	// Use all available ARM resources
-	if app.OCIConfig.UbuntuARMFlexImageOCID != "" && availableARMOCPUs > 0 {
-		app.InstanceConfig.ARMFlexInstanceCount = 1
-		app.InstanceConfig.ARMFlexOCPUsPerInstance = []int{availableARMOCPUs}
-		app.InstanceConfig.ARMFlexMemoryPerInstance = []int{availableARMMemory}
-
-		// Calculate boot volume size to use remaining storage
-		usedByAMD := app.InstanceConfig.AMDMicroInstanceCount * app.InstanceConfig.AMDMicroBootVolumeSizeGB
-		remainingStorage := availableStorage - usedByAMD
-		if remainingStorage < FreeTierMinBootVolumeGB {
-			remainingStorage = FreeTierMinBootVolumeGB
+func validateInstanceConfig(config *InstanceConfig) error {
+	if config.AMDMicroInstanceCount < 0 || config.AMDMicroInstanceCount > FreeTierMaxAMDInstances || config.ARMFlexInstanceCount < 0 || config.ARMFlexInstanceCount > FreeTierMaxARMInstances {
+		return fmt.Errorf("instance count exceeds Free Tier limits")
+	}
+	if len(config.AMDMicroHostnames) != config.AMDMicroInstanceCount { return fmt.Errorf("AMD hostname count does not match instance count") }
+	for _, values := range []int{len(config.ARMFlexHostnames), len(config.ARMFlexOCPUsPerInstance), len(config.ARMFlexMemoryPerInstance), len(config.ARMFlexBootVolumeSizeGB), len(config.ARMFlexBlockVolumes)} {
+		if values != config.ARMFlexInstanceCount { return fmt.Errorf("ARM configuration array length does not match instance count") }
+	}
+	storage := config.AMDMicroInstanceCount*config.AMDMicroBootVolumeSizeGB
+	if config.AMDMicroInstanceCount > 0 && config.AMDMicroBootVolumeSizeGB < FreeTierMinBootVolumeGB { return fmt.Errorf("AMD boot volume below minimum") }
+	cpus, memory := 0, 0
+	for i := 0; i < config.ARMFlexInstanceCount; i++ {
+		if config.ARMFlexOCPUsPerInstance[i] < 1 || config.ARMFlexMemoryPerInstance[i] < 1 || config.ARMFlexBootVolumeSizeGB[i] < FreeTierMinBootVolumeGB || config.ARMFlexBlockVolumes[i] < 0 {
+			return fmt.Errorf("invalid ARM allocation at index %d", i)
 		}
-
-		app.InstanceConfig.ARMFlexBootVolumeSizeGB = []int{remainingStorage}
-		app.InstanceConfig.ARMFlexHostnames = []string{"arm-instance-1"}
-		app.InstanceConfig.ARMFlexBlockVolumes = []int{0}
-	} else {
-		app.InstanceConfig.ARMFlexInstanceCount = 0
+		cpus += config.ARMFlexOCPUsPerInstance[i]
+		memory += config.ARMFlexMemoryPerInstance[i]
+		storage += config.ARMFlexBootVolumeSizeGB[i]+config.ARMFlexBlockVolumes[i]
 	}
-
-	printSuccess(fmt.Sprintf("Maximum config: %dx AMD, %dx ARM (%d OCPUs, %dGB)", 
-		app.InstanceConfig.AMDMicroInstanceCount, app.InstanceConfig.ARMFlexInstanceCount,
-		availableARMOCPUs, availableARMMemory))
+	if cpus > FreeTierMaxARMOCPUs || memory > FreeTierMaxARMMemoryGB || storage > FreeTierMaxStorageGB { return fmt.Errorf("configuration exceeds Free Tier CPU, memory, or storage limits") }
+	return nil
 }

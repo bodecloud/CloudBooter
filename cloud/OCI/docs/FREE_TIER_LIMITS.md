@@ -26,10 +26,12 @@ Oracle may reclaim idle Always Free compute if, over 7 days, CPU / network / mem
 
 | Profile | Menu | Layout | Best for |
 |---|---|---|---|
-| Recommended (billing-safe) | Option 4 (default) | 1× A1 (2/12), 200 GB boot @ 120 VPU | First deploy, PAYG accounts |
+| Recommended (billing-safe) | Option 4 (default) | 1× A1 (2/12), 200 GB boot @ 10 VPU (Balanced) | First deploy, PAYG accounts |
 | Maximum Free Tier | Option 5 | All available AMD + A1 | Advanced homelab only — **PAYG risk** |
 
 `NON_INTERACTIVE=true` always picks the billing-safe profile.
+
+Boot volumes use **Balanced performance: 10 VPUs/GB**, Oracle's default for boot volumes. The previous 120-VPU setting selected Ultra High Performance, which can consume trial credit or add performance charges. Keep total boot and block storage within the home-region Always Free allowance. See [Oracle block-volume performance levels](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/blockvolumeperformance.htm) and [storage pricing](https://www.oracle.com/cloud/storage/pricing/).
 
 ## PAYG upgrade and budgets
 

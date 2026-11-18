@@ -1,6 +1,6 @@
 # Python Implementation
 
-A Python-based implementation of CloudCradle with a clean, object-oriented design.
+A standalone Python module for OCI Terraform setup. The default ARM allocation is 2 OCPU / 12 GB, matching the configured Always Free baseline.
 
 ## Features
 
@@ -48,6 +48,7 @@ Available options:
 - `--auto-deploy` - Automatically deploy
 - `--force-reauth` - Force re-authentication
 - `--debug` - Enable debug logging
+- `--skip-config` - Restore saved configuration before deployment
 
 ## Requirements
 
@@ -85,3 +86,7 @@ python/
 
 - [Main README](../../README.md)
 - [Free Tier Guide](../../docs/FREE_TIER.md)
+
+The package installs the existing `setup_oci_terraform` module and exposes its `main` function as `oci-terraform-setup`. `--help` prints command options before prerequisites or provisioning run.
+
+The shared PowerShell static checks live at `implementations/tests/Test-LegacyImplementations.ps1`. They check source invariants only; Python execution, package installation, Terraform provider validation, and cloud deployment require separate runtime checks.

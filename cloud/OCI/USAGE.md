@@ -64,6 +64,22 @@ $env:AUTO_DEPLOY = 'false'
 .\setup_oci_terraform.ps1
 ```
 
+## PowerShell discovery and recovery
+
+Generated OCI configurations require Terraform 1.5 or later because they use `check` blocks. The Bash generator also preserves the selected authentication method and `OCI_PROFILE`; its API-key and session-token profiles must use `~/.oci/config`.
+
+The PowerShell setup preserves OCI inventory queries and single-VNIC responses, and can resize multiple legacy ARM instances in one run. Terraform generation uses the selected authentication method and `OCI_PROFILE`. API-key authentication also supports a custom `OCI_CONFIG_FILE`; session-token authentication requires the provider's standard `~/.oci/config` path and reports a clear error for other paths.
+
+Saved optional ARM disk sizes survive configuration reloads. Both generators attach each optional disk to its original ARM instance, including configurations where earlier instances have no disk.
+
+If a PowerShell apply fails, it stops because Terraform may already have created resources. Run **Plan only**, review the updated changes, then choose **Deploy** to create and confirm a fresh plan.
+
+Run the isolated PowerShell regression checks without cloud tools or credentials:
+
+```powershell
+.\tests\Test-PowerShell.ps1
+```
+
 ## Bitwarden multi-account resize
 
 Discovers Oracle Cloud logins in Bitwarden, authenticates with API-key custom fields, and runs the resize-only workflow per account.

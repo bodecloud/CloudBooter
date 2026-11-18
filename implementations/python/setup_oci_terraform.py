@@ -18,6 +18,7 @@ Key features:
     - Cross-platform (Windows, Linux, macOS)
 """
 
+import argparse
 import os
 import sys
 import json
@@ -89,12 +90,12 @@ OCI_CLI_MAX_RETRIES = int(os.getenv("OCI_CLI_MAX_RETRIES", "3"))
 # Oracle Free Tier Limits (as of 2025)
 FREE_TIER_MAX_AMD_INSTANCES = 2
 FREE_TIER_AMD_SHAPE = "VM.Standard.E2.1.Micro"
-FREE_TIER_MAX_ARM_OCPUS = 4
-FREE_TIER_MAX_ARM_MEMORY_GB = 24
+FREE_TIER_MAX_ARM_OCPUS = 2
+FREE_TIER_MAX_ARM_MEMORY_GB = 12
 FREE_TIER_ARM_SHAPE = "VM.Standard.A1.Flex"
 FREE_TIER_MAX_STORAGE_GB = 200
 FREE_TIER_MIN_BOOT_VOLUME_GB = 47
-FREE_TIER_MAX_ARM_INSTANCES = 4
+FREE_TIER_MAX_ARM_INSTANCES = 2
 FREE_TIER_MAX_VCNS = 2
 
 # Global console for rich output
@@ -1625,19 +1626,19 @@ def load_existing_config() -> bool:
     instance_config.arm_flex_instance_count = int(arm_match.group(1)) if arm_match else 0
 
     # Load ARM arrays
-    ocpus_match = re.search(r'arm_flex_ocpus_per_instance\s*=\s*\[([^\]]+)\]', content)
+    ocpus_match = re.search(r'arm_flex_ocpus_per_instance\s*=\s*\[([^\]]*)\]', content)
     if ocpus_match:
         instance_config.arm_flex_ocpus_per_instance = [
             int(x.strip()) for x in ocpus_match.group(1).split(",") if x.strip().isdigit()
         ]
 
-    memory_match = re.search(r'arm_flex_memory_per_instance\s*=\s*\[([^\]]+)\]', content)
+    memory_match = re.search(r'arm_flex_memory_per_instance\s*=\s*\[([^\]]*)\]', content)
     if memory_match:
         instance_config.arm_flex_memory_per_instance = [
             int(x.strip()) for x in memory_match.group(1).split(",") if x.strip().isdigit()
         ]
 
-    boot_match = re.search(r'arm_flex_boot_volume_size_gb\s*=\s*\[([^\]]+)\]', content)
+    boot_match = re.search(r'arm_flex_boot_volume_size_gb\s*=\s*\[([^\]]*)\]', content)
     if boot_match:
         instance_config.arm_flex_boot_volume_size_gb = [
             int(x.strip()) for x in boot_match.group(1).split(",") if x.strip().isdigit()
@@ -1656,6 +1657,11 @@ def load_existing_config() -> bool:
             x.strip().strip('"').strip("'") for x in arm_hostnames_match.group(1).split(",")
         ]
 
+    block_match = re.search(r'arm_block_volume_sizes\s*=\s*\[([^\]]*)\]', content)
+    instance_config.arm_flex_block_volumes = (
+        [int(x.strip()) for x in block_match.group(1).split(",") if x.strip()]
+        if block_match else [0] * instance_config.arm_flex_instance_count
+    )
     print_success(f"Loaded configuration: {instance_config.amd_micro_instance_count}x AMD, {instance_config.arm_flex_instance_count}x ARM")
     return True
 
@@ -1727,8 +1733,8 @@ def configure_from_existing_instances() -> None:
         print_status("No existing instances found, using default configuration")
         instance_config.amd_micro_instance_count = 0
         instance_config.arm_flex_instance_count = 1
-        instance_config.arm_flex_ocpus_per_instance = [4]
-        instance_config.arm_flex_memory_per_instance = [24]
+        instance_config.arm_flex_ocpus_per_instance = [FREE_TIER_MAX_ARM_OCPUS]
+        instance_config.arm_flex_memory_per_instance = [FREE_TIER_MAX_ARM_MEMORY_GB]
         instance_config.arm_flex_boot_volume_size_gb = [200]
         instance_config.arm_flex_hostnames = ["arm-instance-1"]
         instance_config.arm_flex_block_volumes = [0]
@@ -1948,7 +1954,7 @@ def create_terraform_provider() -> None:
 # Region: {oci_config.region}
 
 terraform {{
-  required_version = ">= 1.0"
+  required_version = ">= 1.5"
   required_providers {{
     oci = {{
       source  = "oracle/oci"
@@ -2471,15 +2477,13 @@ resource "oci_core_volume_attachment" "amd_block" {
   volume_id       = oci_core_volume.amd_block[count.index].id
 }
 
-# ARM Block Volumes
+# ARM Block Volumes, keyed by the original instance index.
 resource "oci_core_volume" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
-  
+  for_each = { for index, size in local.arm_block_volume_sizes : tostring(index) => size if size > 0 }
   compartment_id      = local.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
-  display_name        = "${local.arm_flex_hostnames[count.index]}-block"
-  size_in_gbs         = [for s in local.arm_block_volume_sizes : s if s > 0][count.index]
-  
+  display_name        = "${local.arm_flex_hostnames[tonumber(each.key)]}-block"
+  size_in_gbs         = each.value
   freeform_tags = {
     "Purpose" = "AlwaysFreeTier"
     "Type"    = "BlockVolume"
@@ -2488,11 +2492,10 @@ resource "oci_core_volume" "arm_block" {
 }
 
 resource "oci_core_volume_attachment" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
-  
+  for_each = oci_core_volume.arm_block
   attachment_type = "paravirtualized"
-  instance_id     = oci_core_instance.arm[count.index].id
-  volume_id       = oci_core_volume.arm_block[count.index].id
+  instance_id     = oci_core_instance.arm[tonumber(each.key)].id
+  volume_id       = each.value.id
 }
 '''
     block_volumes_tf.write_text(block_volumes_content)
@@ -2730,6 +2733,11 @@ def out_of_capacity_auto_apply() -> bool:
 
     while attempt <= RETRY_MAX_ATTEMPTS:
         print_status(f"Apply attempt {attempt}/{RETRY_MAX_ATTEMPTS}")
+        if attempt > 1:
+            replanned = run_command(["terraform", "plan", "-out=tfplan", "-input=false"], check=False)
+            if replanned.returncode != 0:
+                print_error("Failed to refresh plan after partial apply")
+                return False
         result = run_command(["terraform", "apply", "-input=false", "tfplan"], check=False)
 
         if result.returncode == 0:
@@ -2912,6 +2920,21 @@ def terraform_menu() -> bool:
 
 def main() -> None:
     """Main execution function"""
+    global NON_INTERACTIVE, AUTO_USE_EXISTING, AUTO_DEPLOY, SKIP_CONFIG, DEBUG, FORCE_REAUTH
+    parser = argparse.ArgumentParser(description="Manage OCI Always Free infrastructure")
+    parser.add_argument("--non-interactive", action="store_true", default=NON_INTERACTIVE)
+    parser.add_argument("--auto-use-existing", action="store_true", default=AUTO_USE_EXISTING)
+    parser.add_argument("--auto-deploy", action="store_true", default=AUTO_DEPLOY)
+    parser.add_argument("--skip-config", action="store_true", default=SKIP_CONFIG)
+    parser.add_argument("--debug", action="store_true", default=DEBUG)
+    parser.add_argument("--force-reauth", action="store_true", default=FORCE_REAUTH)
+    args = parser.parse_args()
+    NON_INTERACTIVE = args.non_interactive
+    AUTO_USE_EXISTING = args.auto_use_existing
+    AUTO_DEPLOY = args.auto_deploy
+    SKIP_CONFIG = args.skip_config
+    DEBUG = args.debug
+    FORCE_REAUTH = args.force_reauth
     print_header("OCI TERRAFORM SETUP - IDEMPOTENT EDITION")
     print_status("This script safely manages Oracle Cloud Free Tier resources")
     print_status("Safe to run multiple times - will detect and reuse existing resources")

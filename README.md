@@ -104,7 +104,15 @@ cd cloud/GCP && python -m pytest tests/
 cd cloud/Cloudflare && python -m pytest tests/
 ```
 
-CI currently checks that `backend.tf` is not committed and shellchecks one helper script. It does not yet run the full pytest suites — run those locally before you open a PR.
+PowerShell regression checks run without Python, cloud credentials, or provisioning:
+
+```powershell
+.\helper_scripts\test_provider_wrappers.ps1
+.\cloud\OCI\tests\Test-PowerShell.ps1
+.\implementations\tests\Test-LegacyImplementations.ps1
+```
+
+CI runs those PowerShell checks, rejects committed `backend.tf` files at any depth, and shellchecks one helper script. The legacy implementation checks inspect source and generated-template invariants; they do not compile Go or execute Python. CI does not yet run the full pytest suites.
 
 ## Contributing
 

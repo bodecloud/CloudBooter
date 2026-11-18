@@ -192,7 +192,7 @@ validate_free_tier() {
 generate_terraform() {
   print_header "Generate Terraform"
   local out_dir="${TF_OUTPUT_DIR:-.}"
-  python3 -m cloudbooter.cli deploy \
+  python3 -m cloudbooter deploy \
     --account-id "${account_id}" \
     --api-token "${api_token}" \
     --worker-name "${worker_name}" \
@@ -209,7 +209,7 @@ generate_terraform() {
 terraform_apply_with_retry() {
   print_header "Terraform apply"
   local attempt=1 delay="${RETRY_BASE_DELAY}"
-  export TF_VAR_cloudflare_api_token="${api_token}"
+  export TF_VAR_cloudflare_api_token="${TF_VAR_cloudflare_api_token:-${api_token}}"
   terraform init -input=false
   terraform plan -input=false -out=tfplan
   while (( attempt <= RETRY_MAX_ATTEMPTS )); do
@@ -247,7 +247,7 @@ main() {
 
   if [[ "${AUTO_DEPLOY:-false}" == "true" ]]; then
     if ! command_exists terraform; then
-      print_error "terraform not found; install or run: python3 -m cloudbooter.cli install-deps"
+      print_error "terraform not found; install or run: python3 -m cloudbooter install-deps"
       exit 1
     fi
     terraform_apply_with_retry

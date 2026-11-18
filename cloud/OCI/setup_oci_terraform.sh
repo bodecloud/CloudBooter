@@ -73,7 +73,7 @@ readonly FREE_TIER_MAX_VCNS=2
 readonly FREE_TIER_DEFAULT_ARM_OCPUS=2
 readonly FREE_TIER_DEFAULT_ARM_MEMORY_GB=12
 readonly FREE_TIER_DEFAULT_BOOT_VOLUME_GB=200
-readonly FREE_TIER_BOOT_VOLUME_VPU=120
+readonly FREE_TIER_BOOT_VOLUME_VPU=10
 
 # Colors for output
 readonly RED='\033[0;31m'
@@ -2533,7 +2533,7 @@ configure_maximum_free_tier() {
 create_terraform_files() {
     print_header "GENERATING TERRAFORM FILES"
     
-    create_terraform_provider
+    create_terraform_provider || return $?
     create_terraform_variables
     create_terraform_datasources
     create_terraform_main
@@ -2543,21 +2543,46 @@ create_terraform_files() {
     print_success "All Terraform files generated successfully"
 }
 
+terraform_hcl_string() {
+    printf '%s' "$1" | jq -Rs 'split("${") | join("$${") | split("%{") | join("%%{")'
+}
+
 create_terraform_provider() {
     print_status "Creating provider.tf..."
 
+    local selected_auth="${OCI_CLI_AUTH:-$auth_method}"
+    local normalized_auth provider_auth provider_profile=""
+    normalized_auth=$(printf '%s' "$selected_auth" | tr '[:upper:]' '[:lower:]')
+    normalized_auth=${normalized_auth//_/}
+    case "$normalized_auth" in
+        apikey) provider_auth="APIKey" ;;
+        securitytoken) provider_auth="SecurityToken" ;;
+        instanceprincipal) provider_auth="InstancePrincipal" ;;
+        resourceprincipal) provider_auth="ResourcePrincipal" ;;
+        *) print_error "Unsupported Terraform OCI authentication method: $selected_auth"; return 1 ;;
+    esac
+    if [ "$provider_auth" = "APIKey" ] || [ "$provider_auth" = "SecurityToken" ]; then
+        # The provider reads profiles only from ~/.oci/config. Never silently
+        # authenticate Terraform against another account after CLI discovery.
+        if [ "$OCI_CONFIG_FILE" != "$HOME/.oci/config" ] && [ "$OCI_CONFIG_FILE" != '~/.oci/config' ]; then
+            print_error "Terraform OCI profile authentication reads ~/.oci/config. Use that path with OCI_PROFILE; the Bash generator does not support a custom OCI_CONFIG_FILE."
+            return 1
+        fi
+        provider_profile="  config_file_profile = $(terraform_hcl_string "$OCI_PROFILE")"
+    fi
+
     # Configure terraform backend if requested (may create backend.tf)
     configure_terraform_backend || true
-    
+
     [ -f "provider.tf" ] && cp provider.tf "provider.tf.bak.$(date +%Y%m%d_%H%M%S)"
-    
+
     cat > provider.tf << EOF
 # Terraform Provider Configuration for Oracle Cloud Infrastructure
 # Generated: $(date)
 # Region: $region
 
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5"
   required_providers {
     oci = {
       source  = "oracle/oci"
@@ -2566,14 +2591,14 @@ terraform {
   }
 }
 
-# OCI Provider with session token authentication
+# OCI Provider using the same authentication as discovery
 provider "oci" {
-  auth                = "SecurityToken"
-  config_file_profile = "DEFAULT"
-  region              = "$region"
+  auth = $(terraform_hcl_string "$provider_auth")
+$provider_profile
+  region = $(terraform_hcl_string "$region")
 }
 EOF
-    
+
     print_success "provider.tf created"
 }
 
@@ -3128,13 +3153,17 @@ resource "oci_core_volume_attachment" "amd_block" {
 }
 
 # ARM Block Volumes
+locals {
+  arm_block_volume_indices = [for index, size in local.arm_block_volume_sizes : index if size > 0]
+}
+
 resource "oci_core_volume" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
+  count = local.arm_flex_instance_count > 0 ? length(local.arm_block_volume_indices) : 0
   
   compartment_id      = local.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
-  display_name        = "${local.arm_flex_hostnames[count.index]}-block"
-  size_in_gbs         = [for s in local.arm_block_volume_sizes : s if s > 0][count.index]
+  display_name        = "${local.arm_flex_hostnames[local.arm_block_volume_indices[count.index]]}-block"
+  size_in_gbs         = local.arm_block_volume_sizes[local.arm_block_volume_indices[count.index]]
   
   freeform_tags = {
     "Purpose" = "AlwaysFreeTier"
@@ -3144,10 +3173,10 @@ resource "oci_core_volume" "arm_block" {
 }
 
 resource "oci_core_volume_attachment" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
+  count = local.arm_flex_instance_count > 0 ? length(local.arm_block_volume_indices) : 0
   
   attachment_type = "paravirtualized"
-  instance_id     = oci_core_instance.arm[count.index].id
+  instance_id     = oci_core_instance.arm[local.arm_block_volume_indices[count.index]].id
   volume_id       = oci_core_volume.arm_block[count.index].id
 }
 EOF

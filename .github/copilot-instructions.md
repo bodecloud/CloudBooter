@@ -41,7 +41,7 @@ cd cloud/GCP && python -m pytest tests/
 cd cloud/Cloudflare && python -m pytest tests/
 ```
 
-CI does not yet run these suites. It only blocks committed `backend.tf` and shellchecks one helper script.
+CI does not yet run these pytest suites. It blocks committed `backend.tf` files at every directory depth, shellchecks one helper script, and runs the offline PowerShell regressions listed in the root README on Windows.
 
 ## Do not commit
 

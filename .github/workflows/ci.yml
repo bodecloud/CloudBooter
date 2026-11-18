@@ -16,10 +16,10 @@ jobs:
       - name: Ensure no backend.tf or backend/ files are committed
         run: |
           set -euo pipefail
-          if git ls-files --error-unmatch backend.tf >/dev/null 2>&1 || git ls-files --error-unmatch "backend/*.tf" >/dev/null 2>&1; then
+          backend_files=$(git ls-files -- ':(glob)**/backend.tf' ':(glob)**/backend/**/*.tf')
+          if [[ -n "$backend_files" ]]; then
             echo 'ERROR: backend.tf or backend/*.tf found in repository. Remove them and add to .gitignore.'
-            git ls-files --error-unmatch backend.tf 2>/dev/null || true
-            git ls-files --error-unmatch "backend/*.tf" 2>/dev/null || true
+            printf '%s\n' "$backend_files"
             exit 1
           fi
   shellcheck:
@@ -33,3 +33,24 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck helper_scripts/post-provision-bodecloud-infra.sh
+  powershell-regressions:
+    name: PowerShell offline regressions
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Test provider wrappers
+        shell: pwsh
+        run: ./helper_scripts/test_provider_wrappers.ps1
+      - name: Test provider wrappers on Windows PowerShell
+        shell: powershell
+        run: ./helper_scripts/test_provider_wrappers.ps1
+      - name: Test OCI PowerShell workflow
+        shell: pwsh
+        run: ./cloud/OCI/tests/Test-PowerShell.ps1
+      - name: Test OCI workflow on Windows PowerShell
+        shell: powershell
+        run: ./cloud/OCI/tests/Test-PowerShell.ps1
+      - name: Test legacy implementations
+        shell: pwsh
+        run: ./implementations/tests/Test-LegacyImplementations.ps1

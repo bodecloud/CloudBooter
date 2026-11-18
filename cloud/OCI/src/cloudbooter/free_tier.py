@@ -33,7 +33,7 @@ class OCIFreeTierLimits:
     max_storage_gb: int = 200
     min_boot_volume_gb: int = 47
     default_boot_volume_gb: int = 200
-    boot_volume_vpu: int = 120
+    boot_volume_vpu: int = 10
     max_volume_backups: int = 5
 
     # ── Networking ──────────────────────────────────────────────────────────────

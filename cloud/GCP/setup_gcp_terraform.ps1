@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   CloudBooter GCP Provisioner (PowerShell).
@@ -14,7 +14,7 @@
   Compute region (default: us-central1). Must be a free-tier region.
 
 .PARAMETER Zone
-  Compute zone (default: us-central1-a).
+  Compute zone (default: the selected region followed by -a).
 
 .PARAMETER InstanceName
   Compute instance name (default: cloudbooter-vm).
@@ -47,7 +47,7 @@
 param(
     [string]$ProjectId        = $env:GCP_PROJECT_ID,
     [string]$Region           = $(if ($env:GCP_REGION) { $env:GCP_REGION } else { "us-central1" }),
-    [string]$Zone             = $(if ($env:GCP_ZONE) { $env:GCP_ZONE } else { "us-central1-a" }),
+    [string]$Zone             = $(if ($env:GCP_ZONE) { $env:GCP_ZONE } else { "$Region-a" }),
     [string]$InstanceName     = $(if ($env:GCP_INSTANCE_NAME) { $env:GCP_INSTANCE_NAME } else { "cloudbooter-vm" }),
     [int]   $BootDiskGb       = $(if ($env:GCP_BOOT_DISK_GB) { [int]$env:GCP_BOOT_DISK_GB } else { 20 }),
     [string]$CredentialsFile  = $env:GCP_CREDENTIALS_FILE,
@@ -123,15 +123,19 @@ function Test-Command { param($c) return [bool](Get-Command $c -ErrorAction Sile
 
 # ── gcloud wrapper ────────────────────────────────────────────────────────────
 function Invoke-Gcloud {
-    param([string[]]$Args)
-    $allArgs = $Args + @("--format=json","--quiet")
+    param([string[]]$CommandArgs)
+    $allArgs = $CommandArgs + @("--format=json","--quiet")
     if ($ProjectId) { $allArgs += @("--project",$ProjectId) }
     Write-Dbg "gcloud $($allArgs -join ' ')"
+    $output = & gcloud @allArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "gcloud inventory failed (exit $LASTEXITCODE): $($CommandArgs -join ' ')"
+    }
     try {
-        $output = & gcloud @allArgs 2>$null
+        if ([string]::IsNullOrWhiteSpace(($output -join "`n")) -or ($output -join "`n").Trim() -eq "null") { throw "Empty inventory response" }
         return $output | ConvertFrom-Json -ErrorAction Stop
     } catch {
-        return @()
+        throw "gcloud returned invalid inventory JSON: $_"
     }
 }
 
@@ -294,6 +298,11 @@ function Assert-FreeTier {
         $ok = $false
     } else { Write-OK "Region: $Region" }
 
+    if (-not $Zone.StartsWith("$Region-", [StringComparison]::Ordinal)) {
+        Write-Err "Zone '$Zone' must belong to region '$Region'."
+        throw "Compute zone and region do not match."
+    }
+
     if ($BootDiskGb -gt $FREE_STANDARD_PD_GB) {
         Write-Err "Boot disk $BootDiskGb GB exceeds free tier cap of $FREE_STANDARD_PD_GB GB."
         $ok = $false
@@ -367,7 +376,10 @@ $impBlock
 
 function New-VariablesTf {
     $credVar = if ($CredentialsFile) {
-"`nvariable `"credentials_file`" {`n  description = `"SA key file path`"`n  type        = string`n}`n"
+"`nvariable `"credentials_file`" {`n  description = `"SA key file path`"`n  type        = string`n  default     = $($CredentialsFile.Replace('\', '/') | ConvertTo-Json -Compress)`n}`n"
+    } else { "" }
+    $impVar = if ($ImpersonateSa) {
+"`nvariable `"impersonate_service_account`" {`n  description = `"Service account email to impersonate`"`n  type        = string`n  default     = $($ImpersonateSa | ConvertTo-Json -Compress)`n}`n"
     } else { "" }
 
     @"
@@ -419,6 +431,7 @@ variable "ssh_public_key" {
   sensitive   = true
 }
 $credVar
+$impVar
 check "e2_micro_machine_type" {
   assert {
     condition     = var.machine_type == "$FREE_MACHINE_TYPE"
@@ -461,6 +474,8 @@ data "google_compute_zones" "available" {
 }
 
 function New-MainTf {
+    $sshCommand = "ssh -i `"$($SshKeyFile.Replace('\', '/'))`" ubuntu@" | ConvertTo-Json -Compress
+    $sshCommandPrefix = $sshCommand.Substring(0, $sshCommand.Length - 1)
     @"
 resource "google_compute_network" "vpc" {
   name                    = "`${var.instance_name}-vpc"
@@ -549,7 +564,7 @@ output "instance_external_ip" {
 
 output "ssh_command" {
   description = "SSH command to connect"
-  value       = "ssh -i $SshKeyFile ubuntu:`${google_compute_instance.vm.network_interface[0].access_config[0].nat_ip}"
+  value       = $sshCommandPrefix`${google_compute_instance.vm.network_interface[0].access_config[0].nat_ip}"
 }
 
 output "console_url" {
@@ -627,6 +642,7 @@ function Invoke-TerraformApplyWithRetry {
                 -var="project_id=$ProjectId" -var="region=$Region" -var="zone=$Zone" `
                 -var="instance_name=$InstanceName" -var="boot_disk_size_gb=$BootDiskGb" `
                 -out="$TfOutputDir\tfplan" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "terraform re-plan failed." }
         } else {
             Write-Err "Non-retryable Terraform error:`n$resultText"
             throw "Terraform apply failed."

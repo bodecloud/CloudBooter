@@ -18,7 +18,7 @@ cd cloud/OCI
 ./setup_oci_terraform.sh
 ```
 
-Choose **option 4 — Recommended (billing-safe)** for 1× A1 (2/12) with a 200 GB boot volume at 120 VPU.
+Choose **option 4 — Recommended (billing-safe)** for 1× A1 (2/12) with a 200 GB boot volume at 10 VPU (Balanced).
 
 Non-interactive:
 
@@ -48,7 +48,7 @@ SSH with the key under `./ssh_keys/` (Ubuntu images use the `ubuntu` user).
    ssh-keygen -t ed25519 -C "you@example.com"
    ```
 
-6. Custom boot volume: **200 GB**, performance **120 VPU**.
+6. Custom boot volume: **200 GB**, performance **10 VPU (Balanced)**.
 7. Create the instance, wait until it is Running, then:
 
    ```bash

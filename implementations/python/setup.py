@@ -1,10 +1,9 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 setup(
     name="oci-terraform-setup",
     version="1.0.0",
-    packages=find_packages(where="src"),
-    package_dir={"": "src"},
+    py_modules=["setup_oci_terraform"],
     install_requires=[
         "oci>=2.155.0",
         "python-terraform>=1.0.0",
@@ -16,7 +15,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "oci-terraform-setup=oci_terraform_setup.cli:main",
+            "oci-terraform-setup=setup_oci_terraform:main",
         ],
     },
     python_requires=">=3.8",

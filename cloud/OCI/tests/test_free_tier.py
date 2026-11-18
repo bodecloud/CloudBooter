@@ -31,7 +31,7 @@ class TestOCIFreeTierLimitsConstants:
         assert LIMITS.default_arm_ocpus == 2
         assert LIMITS.default_arm_memory_gb == 12
         assert LIMITS.default_boot_volume_gb == 200
-        assert LIMITS.boot_volume_vpu == 120
+        assert LIMITS.boot_volume_vpu == 10
 
     def test_amd_and_storage_limits(self):
         assert LIMITS.max_amd_instances == 2

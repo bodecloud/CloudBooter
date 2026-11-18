@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   CloudBooter Cloudflare Free-plan provisioner (PowerShell).
@@ -44,6 +44,7 @@ function Ensure-PythonDeps {
   $py = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
   if (Test-Path ".\requirements.txt") {
     & $py -m pip install -q -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed (exit $LASTEXITCODE)" }
   }
   $env:PYTHONPATH = (Join-Path $PSScriptRoot "src") + [IO.Path]::PathSeparator + $env:PYTHONPATH
   return $py
@@ -98,7 +99,7 @@ if ($env:SKIP_CONFIG -ne "true") {
 }
 
 Write-Info "Generating Terraform…"
-& $py -m cloudbooter.cli deploy `
+& $py -m cloudbooter deploy `
   --account-id $accountId `
   --api-token $apiToken `
   --worker-name $workerName `
@@ -110,16 +111,21 @@ Write-Info "Generating Terraform…"
   --no-auto-deploy `
   --non-interactive
 
+if ($LASTEXITCODE -ne 0) { throw "Terraform generation failed (exit $LASTEXITCODE)" }
+
 Write-Ok "Terraform files written"
 
 if ($env:AUTO_DEPLOY -eq "true") {
   if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
     throw "terraform not found"
   }
-  $env:TF_VAR_cloudflare_api_token = $apiToken
+  if (-not $env:TF_VAR_cloudflare_api_token) { $env:TF_VAR_cloudflare_api_token = $apiToken }
   terraform init -input=false
+  if ($LASTEXITCODE -ne 0) { throw "terraform init failed (exit $LASTEXITCODE)" }
   terraform plan -input=false -out=tfplan
+  if ($LASTEXITCODE -ne 0) { throw "terraform plan failed (exit $LASTEXITCODE)" }
   terraform apply -input=false tfplan
+  if ($LASTEXITCODE -ne 0) { throw "terraform apply failed (exit $LASTEXITCODE)" }
   Write-Ok "Apply complete"
 } else {
   Write-Info "Skipping apply (set AUTO_DEPLOY=true to apply)."

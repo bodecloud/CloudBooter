@@ -34,13 +34,13 @@ NON_INTERACTIVE=true AUTO_DEPLOY=false ./setup_oci_terraform.sh
 | Needs | Bash 4+, `jq`, `curl` | PowerShell 5.1+ or PowerShell 7+ |
 | Installs if missing | OCI CLI, Terraform | OCI CLI, Terraform |
 
-Both scripts inventory resources, enforce free-tier checks, generate Terraform, and can retry on OCI capacity errors.
+Both scripts inventory resources, enforce free-tier checks, and generate Terraform. Bash retries capacity errors with bounded backoff; PowerShell stops after a failed apply so you can review a fresh plan.
 
 ## What the default profile creates
 
 - VCN, public subnet, internet gateway, route table
 - Security list with SSH ingress (optional extra ports)
-- One Arm A1 instance: 2 OCPU / 12 GB, 200 GB boot @ 120 VPU
+- One Arm A1 instance: 2 OCPU / 12 GB, 200 GB boot @ 10 VPU (Balanced)
 - ed25519 keys under `./ssh_keys/`
 - `cloud-init.yaml` for basic first-boot setup
 
@@ -74,7 +74,9 @@ oci session refresh --profile DEFAULT
 
 **Out of capacity**
 
-Always Free shapes run out often. The scripts retry with backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`). Wait, try another availability domain, or shrink the request.
+Always Free shapes can run out of host capacity. Wait and retry, request a smaller VM, or try another availability domain in your tenancy's home region when available. These steps do not guarantee capacity.
+
+Bash retries capacity errors with bounded exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`). PowerShell stops after a failed apply because some resources may already exist: run **Plan only**, review the updated changes, then choose **Deploy** to create and confirm a fresh plan.
 
 **PowerShell blocked scripts**
 

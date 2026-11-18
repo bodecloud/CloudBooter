@@ -23,8 +23,9 @@ python -m pytest tests/
 
 CI currently:
 
-- Rejects committed `backend.tf` / `backend/*.tf`
+- Rejects committed `backend.tf` / `backend/*.tf` at every directory depth
 - Shellchecks `helper_scripts/post-provision-bodecloud-infra.sh`
+- Runs the PowerShell regression scripts listed in the root README on Windows
 
 It does **not** run the full pytest suites yet. Run them locally before opening a PR.
 

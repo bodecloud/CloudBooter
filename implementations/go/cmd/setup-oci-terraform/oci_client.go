@@ -18,11 +18,13 @@ import (
 
 // Initialize OCI clients
 func (app *App) initializeOCIClients() error {
-	configProvider, err := common.ConfigurationProviderFromFileWithProfile(
-		app.Config.OCIConfigFile,
-		app.Config.OCIProfile,
-		nil,
-	)
+	providerFromFile := common.ConfigurationProviderFromFileWithProfile
+	app.OCIConfig.AuthMethod = "APIKey"
+	if tokenFile, err := readOCIConfigValue("security_token_file", app.Config.OCIConfigFile, app.Config.OCIProfile); err == nil && tokenFile != "" {
+		providerFromFile = common.ConfigurationProviderForSessionTokenWithProfile
+		app.OCIConfig.AuthMethod = "SecurityToken"
+	}
+	configProvider, err := providerFromFile(app.Config.OCIConfigFile, app.Config.OCIProfile, "")
 	if err != nil {
 		return fmt.Errorf("failed to load OCI config: %w", err)
 	}
@@ -55,6 +57,7 @@ func (app *App) initializeOCIClients() error {
 	}
 	app.BlockStorageClient = blockStorageClient
 
+
 	return nil
 }
 
@@ -78,9 +81,9 @@ func readOCIConfigValue(key, configFile, profile string) (string, error) {
 			continue
 		}
 
-		if inProfile && strings.HasPrefix(line, key+"=") {
-			value := strings.TrimPrefix(line, key+"=")
-			return strings.TrimSpace(value), nil
+		if inProfile {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == key { return strings.TrimSpace(parts[1]), nil }
 		}
 	}
 
@@ -256,7 +259,7 @@ func (app *App) setupOCIConfig() error {
 	}
 
 	// Check if config exists and is valid
-	if _, err := os.Stat(app.Config.OCIConfigFile); err == nil {
+	if _, err := os.Stat(app.Config.OCIConfigFile); err == nil && !app.Config.ForceReauth {
 		printStatus("Existing OCI configuration found")
 		
 		if err := app.validateExistingOCIConfig(); err == nil {
@@ -291,7 +294,7 @@ func (app *App) setupOCIConfig() error {
 	printStatus(fmt.Sprintf("Using region '%s' for authentication", authRegion))
 
 	// Execute oci session authenticate
-	cmd := exec.Command("oci", "session", "authenticate",
+	cmd := exec.Command("oci", "--config-file", app.Config.OCIConfigFile, "session", "authenticate",
 		"--profile-name", app.Config.OCIProfile,
 		"--region", authRegion,
 		"--session-expiration-in-minutes", "60")
@@ -331,7 +334,7 @@ func (app *App) setupOCIConfig() error {
 		return fmt.Errorf("connectivity test failed after authentication: %w", err)
 	}
 
-	app.OCIConfig.AuthMethod = "security_token"
+	app.OCIConfig.AuthMethod = "SecurityToken"
 	printSuccess("OCI authentication configured successfully")
 	return nil
 }

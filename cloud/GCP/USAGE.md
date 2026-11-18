@@ -30,7 +30,7 @@ cloudbooter-gcp install-deps
 |---|---|---|
 | `GCP_PROJECT_ID` | Project ID | required |
 | `GCP_REGION` | Compute region | `us-central1` |
-| `GCP_ZONE` | Compute zone | auto / `us-central1-a` |
+| `GCP_ZONE` | Compute zone; must belong to `GCP_REGION` | selected region + `-a` (setup scripts) |
 | `GCP_INSTANCE_NAME` | Instance name | `cloudbooter-vm` |
 | `GCP_BOOT_DISK_GB` | Boot disk size (max 30 for free) | `20` |
 | `GCP_CREDENTIALS_FILE` | SA key or WIF JSON path | (none) |
@@ -81,6 +81,8 @@ AUTO_DEPLOY=false \
 ## Generated files
 
 Typically: `provider.tf`, `variables.tf`, `data_sources.tf`, `main.tf`, `cloud-init.yaml`. Do not commit credentials into the output directory.
+
+The setup scripts include the selected credential-file path and impersonated account as Terraform variable defaults, so a later plan does not prompt for them. `TF_VAR_credentials_file` and `TF_VAR_impersonate_service_account` can override those defaults. PowerShell inventory stops on gcloud failures or invalid JSON; repair authentication or permissions before trying again.
 
 ## Safety
 

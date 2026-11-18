@@ -12,7 +12,7 @@
 # Environment variables:
 #   GCP_PROJECT_ID            — GCP project ID (required; prompted if missing)
 #   GCP_REGION                — Compute region (default: us-central1)
-#   GCP_ZONE                  — Compute zone   (default: us-central1-a)
+#   GCP_ZONE                  — Compute zone   (default: selected region followed by -a)
 #   GCP_INSTANCE_NAME         — Instance hostname (default: cloudbooter-vm)
 #   GCP_CREDENTIALS_FILE      — Path to SA key / WIF config JSON
 #   GCP_IMPERSONATE_SA        — SA email to impersonate instead of using direct key
@@ -56,7 +56,6 @@ readonly FREE_STORAGE_REGIONS="us-east1 us-west1 us-central1"
 
 # Default configuration values
 readonly DEFAULT_REGION="us-central1"
-readonly DEFAULT_ZONE="us-central1-a"
 readonly DEFAULT_INSTANCE_NAME="cloudbooter-vm"
 readonly DEFAULT_BOOT_DISK_GB=20
 readonly DEFAULT_SSH_KEY_FILE="${HOME}/.ssh/cloudbooter_gcp"
@@ -83,7 +82,7 @@ readonly -a GCP_RETRY_PATTERNS=(
 # =============================================================================
 declare -g project_id=""
 declare -g region="${GCP_REGION:-${DEFAULT_REGION}}"
-declare -g zone="${GCP_ZONE:-${DEFAULT_ZONE}}"
+declare -g zone="${GCP_ZONE:-${region}-a}"
 declare -g instance_name="${GCP_INSTANCE_NAME:-${DEFAULT_INSTANCE_NAME}}"
 declare -g boot_disk_gb="${GCP_BOOT_DISK_GB:-${DEFAULT_BOOT_DISK_GB}}"
 declare -g credentials_file="${GCP_CREDENTIALS_FILE:-}"
@@ -555,6 +554,12 @@ validate_proposed_config() {
         print_success "Region: ${check_region} ✓"
     fi
 
+    # A subnet and instance must be in the same region, even for paid resources.
+    if [[ "${zone}" != "${check_region}-"* ]]; then
+        print_error "Zone '${zone}' must belong to region '${check_region}'."
+        return 1
+    fi
+
     # Disk
     if (( check_disk > FREE_STANDARD_PD_GB )); then
         print_error "Boot disk ${check_disk} GB exceeds free tier cap of ${FREE_STANDARD_PD_GB} GB."
@@ -623,7 +628,7 @@ prompt_configuration() {
     region="$(prompt_with_default "Compute region" "${region}")"
 
     # Auto-select zone if not set
-    if [[ "${zone}" == "${DEFAULT_ZONE}" && "${region}" != "${DEFAULT_REGION}" ]]; then
+    if [[ -z "${GCP_ZONE:-}" ]]; then
         zone="${region}-a"
     fi
     zone="$(prompt_with_default "Compute zone" "${zone}")"
@@ -707,19 +712,28 @@ BACKENDBLOCK
 
 generate_variables_tf() {
     local cred_variable=""
-    [[ -n "${credentials_file}" ]] && cred_variable='
+    if [[ -n "${credentials_file}" ]]; then
+        cred_variable=$(cat <<CREDENTIALS
 variable "credentials_file" {
   description = "Path to GCP service account key file"
   type        = string
-}'
+  default     = $(jq -Rn --arg value "${credentials_file}" '$value')
+}
+CREDENTIALS
+)
+    fi
 
     local impersonation_variable=""
-    [[ -n "${impersonate_sa}" ]] && impersonation_variable='
+    if [[ -n "${impersonate_sa}" ]]; then
+        impersonation_variable=$(cat <<IMPERSONATION
 variable "impersonate_service_account" {
   description = "Service account email to impersonate"
   type        = string
-  default     = ""
-}'
+  default     = $(jq -Rn --arg value "${impersonate_sa}" '$value')
+}
+IMPERSONATION
+)
+    fi
 
     cat > "${terraform_output_dir}/variables.tf" << VARIABLESF
 variable "project_id" {
@@ -1018,7 +1032,7 @@ out_of_quota_auto_apply() {
             sleep "${delay}"
             delay=$(( delay * 2 ))  # Exponential backoff
             # Refresh plan before retry
-            run_terraform_plan || true
+            run_terraform_plan || return 1
         else
             print_error "Terraform apply failed with a non-retryable error."
             return 1

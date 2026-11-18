@@ -9,7 +9,7 @@ flowchart TD
   C --> D[Generate Terraform + SSH keys]
   D --> E{AUTO_DEPLOY?}
   E -- no --> F[Inspect plan yourself]
-  E -- yes --> G[terraform init plan apply with capacity retry]
+  E -- yes --> G[terraform init plan apply]
 ```
 
 ## What this provider is for
@@ -41,7 +41,11 @@ Free-tier numbers live in three places on purpose:
 
 ## Capacity retries
 
-Always Free shapes often return "Out of Capacity". Apply is wrapped in exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`). That is intentional, not a hang.
+Always Free shapes can return "Out of Capacity". Bash retries capacity errors with bounded exponential backoff (`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`). PowerShell stops after a failed apply because Terraform may already have created resources. Run **Plan only**, review the updated changes, then choose **Deploy** to create and confirm a fresh plan.
+
+The separate [`out_of_capacity.sh` helper](../../../helper_scripts/out_of_capacity.sh) refreshes saved plans between later attempts and applies them automatically.
+
+Wait and retry, request a smaller VM, or try another availability domain in your tenancy's home region when available. These steps do not guarantee capacity.
 
 ## More reading
 

@@ -1,4 +1,4 @@
-# Oracle Cloud Infrastructure (OCI) Terraform Setup Script
+﻿# Oracle Cloud Infrastructure (OCI) Terraform Setup Script
 #
 # Usage:
 #   TUI mode (recommended):  .\setup_oci_terraform.ps1
@@ -66,7 +66,7 @@ $FREE_TIER_MAX_VCNS = 2
 $FREE_TIER_DEFAULT_ARM_OCPUS = 2
 $FREE_TIER_DEFAULT_ARM_MEMORY_GB = 12
 $FREE_TIER_DEFAULT_BOOT_VOLUME_GB = 200
-$FREE_TIER_BOOT_VOLUME_VPU = 120
+$FREE_TIER_BOOT_VOLUME_VPU = 10
 
 # Colors for output
 $RED = [char]27 + '[0;31m'
@@ -605,7 +605,12 @@ function safe_jq {
     }
     try {
         # Parse JSON
-        $obj = $json | ConvertFrom-Json -ErrorAction Stop
+        $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+        if ($json.TrimStart().StartsWith('[')) {
+            # Windows PowerShell preserves root arrays; PowerShell 7 unwraps
+            # singleton arrays. Normalize the parsed result in either host.
+            $obj = @($obj)
+        }
         
         # Parse jq-like query and navigate the object
         # Supports: .property, ."property-with-dashes", [index], nested paths
@@ -759,47 +764,34 @@ function run_cmd_with_retries_and_check {
     }
 }
 
-# Automatically re-run terraform apply until success on 'Out of Capacity', with backoff
+# Apply only the reviewed saved plan; failures require a new plan and review.
 function out_of_capacity_auto_apply {
-    print_status "Auto-retrying terraform apply until success or max attempts ($RETRY_MAX_ATTEMPTS)..."
-    $attempt = 1
-    $rc = 1
-    $out = ''
-
-    while ($attempt -le $RETRY_MAX_ATTEMPTS) {
-        print_status "Apply attempt $attempt/$RETRY_MAX_ATTEMPTS"
-        try {
-            & terraform apply tfplan 2>&1 | Tee-Object -Variable out | Out-Null
-            $rc = $LASTEXITCODE
-            if ($null -eq $rc) { $rc = 0 }
-        }
-        catch {
-            $out = $_.Exception.Message
-            $rc = 1
-        }
-
-        if ($rc -eq 0) {
-            print_success "terraform apply succeeded"
-            return $true
-        }
-
-        if ($out -match '(?i)out of capacity|out of host capacity|OutOfCapacity|OutOfHostCapacity') {
-            print_warning "Apply failed with 'Out of Capacity' - will retry"
-        }
-        else {
-            print_error "terraform apply failed with non-retryable error"
-            Write-Host $out
-            return $false
-        }
-
-        $sleep_time = [int]($RETRY_BASE_DELAY * [math]::Pow(2, ($attempt - 1)))
-        print_status "Waiting ${sleep_time}s before retrying..."
-        Start-Sleep -Seconds $sleep_time
-        $attempt++
+    print_status "Applying the reviewed Terraform plan..."
+    try {
+        & terraform apply tfplan 2>&1 | Tee-Object -Variable out | Out-Null
+        $rc = $LASTEXITCODE
+        if ($null -eq $rc) { $rc = 0 }
+    }
+    catch {
+        $out = $_.Exception.Message
+        $rc = 1
     }
 
-    print_error "terraform apply did not succeed after $RETRY_MAX_ATTEMPTS attempts"
-    Write-Host $out
+    if ($rc -eq 0) {
+        print_success "terraform apply succeeded"
+        return $true
+    }
+
+    # A failed apply can already have changed state. Reusing its saved plan
+    # would be stale, and a new plan must be reviewed before apply.
+    if ($out -match '(?i)out of capacity|out of host capacity|OutOfCapacity|OutOfHostCapacity') {
+        print_warning "Apply stopped after a capacity error; some resources may already exist."
+    }
+    else {
+        print_error "terraform apply failed"
+        Write-Host $out
+    }
+    print_status "Run Plan again, review the updated changes, then choose Deploy."
     return $false
 }
 
@@ -1268,7 +1260,8 @@ function Wait-ForInstanceState {
     $interval = 15
     while ($elapsed -lt $TimeoutSec) {
         try {
-            $state = oci_cmd "compute instance get --instance-id $InstanceId --query 'data.\"lifecycle-state\"' --raw-output"
+            $ociQuery = 'data."lifecycle-state"'
+            $state = oci_cmd "compute instance get --instance-id $InstanceId --query '$ociQuery' --raw-output"
             if ($state -eq $DesiredState) { return $true }
             print_debug "  Waiting for $InstanceId (state=$state)..."
         }
@@ -1321,7 +1314,7 @@ function Resize-LegacyArmInstances {
 
     $resized = 0
     $failed = 0
-    foreach ($entry in $script:EXISTING_ARM_INSTANCES.GetEnumerator()) {
+    foreach ($entry in @($script:EXISTING_ARM_INSTANCES.GetEnumerator())) {
         $id = $entry.Key
         $parts = $entry.Value -split '\|'
         $name = $parts[0]
@@ -2166,7 +2159,8 @@ function inventory_compute_instances {
     
     # Get ALL instances (including terminated for awareness)
     try {
-        $all_instances = oci_cmd "compute instance list --compartment-id $script:tenancy_ocid --query 'data[?\"lifecycle-state\"!=\"TERMINATED\"].{id:id,name:\"display-name\",state:\"lifecycle-state\",shape:shape,ad:\"availability-domain\",created:\"time-created\"}' --all"
+        $ociQuery = 'data[?"lifecycle-state"!=`"TERMINATED"`].{id:id,name:"display-name",state:"lifecycle-state",shape:shape,ad:"availability-domain",created:"time-created"}'
+        $all_instances = oci_cmd "compute instance list --compartment-id $script:tenancy_ocid --query '$ociQuery' --all"
     }
     catch {
         $all_instances = '[]'
@@ -2208,7 +2202,8 @@ function inventory_compute_instances {
         
         # Get VNIC information for IP addresses
         try {
-            $vnic_attachments = oci_cmd "compute vnic-attachment list --compartment-id $script:tenancy_ocid --instance-id $id --query 'data[?\"lifecycle-state\"==\"ATTACHED\"]'"
+            $ociQuery = 'data[?"lifecycle-state"==`"ATTACHED"`]'
+            $vnic_attachments = oci_cmd "compute vnic-attachment list --compartment-id $script:tenancy_ocid --instance-id $id --query '$ociQuery'"
         }
         catch {
             $vnic_attachments = '[]'
@@ -2281,7 +2276,8 @@ function inventory_networking_resources {
     
     # Get VCNs
     try {
-        $vcn_list = oci_cmd "network vcn list --compartment-id $script:tenancy_ocid --query 'data[?\"lifecycle-state\"==\"AVAILABLE\"].{id:id,name:\"display-name\",cidr:\"cidr-block\"}' --all"
+        $ociQuery = 'data[?"lifecycle-state"==`"AVAILABLE"`].{id:id,name:"display-name",cidr:"cidr-block"}'
+        $vcn_list = oci_cmd "network vcn list --compartment-id $script:tenancy_ocid --query '$ociQuery' --all"
     }
     catch {
         $vcn_list = '[]'
@@ -2312,7 +2308,8 @@ function inventory_networking_resources {
         
         # Get subnets for this VCN
         try {
-            $subnet_list = oci_cmd "network subnet list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query 'data[?\"lifecycle-state\"==\"AVAILABLE\"].{id:id,name:\"display-name\",cidr:\"cidr-block\"}'"
+            $ociQuery = 'data[?"lifecycle-state"==`"AVAILABLE"`].{id:id,name:"display-name",cidr:"cidr-block"}'
+            $subnet_list = oci_cmd "network subnet list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query '$ociQuery'"
         }
         catch {
             $subnet_list = '[]'
@@ -2338,7 +2335,8 @@ function inventory_networking_resources {
         
         # Get internet gateways
         try {
-            $ig_list = oci_cmd "network internet-gateway list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query 'data[?\"lifecycle-state\"==\"AVAILABLE\"].{id:id,name:\"display-name\"}'"
+            $ociQuery = 'data[?"lifecycle-state"==`"AVAILABLE"`].{id:id,name:"display-name"}'
+            $ig_list = oci_cmd "network internet-gateway list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query '$ociQuery'"
         }
         catch {
             $ig_list = '[]'
@@ -2362,7 +2360,8 @@ function inventory_networking_resources {
         
         # Get route tables
         try {
-            $rt_list = oci_cmd "network route-table list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query 'data[].{id:id,name:\"display-name\"}'"
+            $ociQuery = 'data[].{id:id,name:"display-name"}'
+            $rt_list = oci_cmd "network route-table list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query '$ociQuery'"
         }
         catch {
             $rt_list = '[]'
@@ -2386,7 +2385,8 @@ function inventory_networking_resources {
         
         # Get security lists
         try {
-            $sl_list = oci_cmd "network security-list list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query 'data[].{id:id,name:\"display-name\"}'"
+            $ociQuery = 'data[].{id:id,name:"display-name"}'
+            $sl_list = oci_cmd "network security-list list --compartment-id $script:tenancy_ocid --vcn-id $vcn_id --query '$ociQuery'"
         }
         catch {
             $sl_list = '[]'
@@ -2422,7 +2422,8 @@ function inventory_storage_resources {
     
     # Get boot volumes
     try {
-        $boot_list = oci_cmd "bv boot-volume list --compartment-id $script:tenancy_ocid --availability-domain $script:availability_domain --query 'data[?\"lifecycle-state\"==\"AVAILABLE\"].{id:id,name:\"display-name\",size:\"size-in-gbs\"}' --all"
+        $ociQuery = 'data[?"lifecycle-state"==`"AVAILABLE"`].{id:id,name:"display-name",size:"size-in-gbs"}'
+        $boot_list = oci_cmd "bv boot-volume list --compartment-id $script:tenancy_ocid --availability-domain $script:availability_domain --query '$ociQuery' --all"
     }
     catch {
         $boot_list = '[]'
@@ -2450,7 +2451,8 @@ function inventory_storage_resources {
     
     # Get block volumes
     try {
-        $block_list = oci_cmd "bv volume list --compartment-id $script:tenancy_ocid --availability-domain $script:availability_domain --query 'data[?\"lifecycle-state\"==\"AVAILABLE\"].{id:id,name:\"display-name\",size:\"size-in-gbs\"}' --all"
+        $ociQuery = 'data[?"lifecycle-state"==`"AVAILABLE"`].{id:id,name:"display-name",size:"size-in-gbs"}'
+        $block_list = oci_cmd "bv volume list --compartment-id $script:tenancy_ocid --availability-domain $script:availability_domain --query '$ociQuery' --all"
     }
     catch {
         $block_list = '[]'
@@ -2674,10 +2676,19 @@ function load_existing_config {
         $boot_str = $matches[1]
     }
     
-    $script:arm_flex_ocpus_per_instance = (($ocpus_str ?? '') -replace ',', ' ' -replace '\s+', ' ').Trim()
-    $script:arm_flex_memory_per_instance = (($memory_str ?? '') -replace ',', ' ' -replace '\s+', ' ').Trim()
-    $script:arm_flex_boot_volume_size_gb = (($boot_str ?? '') -replace ',', ' ' -replace '\s+', ' ').Trim()
+    $script:arm_flex_ocpus_per_instance = (([string]$ocpus_str) -replace ',', ' ' -replace '\s+', ' ').Trim()
+    $script:arm_flex_memory_per_instance = (([string]$memory_str) -replace ',', ' ' -replace '\s+', ' ').Trim()
+    $script:arm_flex_boot_volume_size_gb = (([string]$boot_str) -replace ',', ' ' -replace '\s+', ' ').Trim()
     
+    # Restore optional disks so regenerating a saved configuration keeps them.
+    $script:arm_flex_block_volumes = @(0) * $script:arm_flex_instance_count
+    if ($content -match 'arm_block_volume_sizes\s*=\s*\[([^\]]*)\]') {
+        $blockSizes = $matches[1]
+        $script:arm_flex_block_volumes = @(
+            $blockSizes -split '[,\s]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ }
+        )
+    }
+
     # Load hostnames
     $amd_hostnames_str = $null
     if ($content -match 'amd_micro_hostnames\s*=\s*\[([^\]]+)') {
@@ -3253,8 +3264,62 @@ function create_terraform_files {
     print_success "All Terraform files generated successfully"
 }
 
+function convert_to_hcl_string {
+    param([string]$Value)
+    return ($Value.Replace('${', '$${').Replace('%{', '%%{') | ConvertTo-Json -Compress)
+}
+
+function get_terraform_auth_config {
+    $selectedAuth = if ($env:OCI_CLI_AUTH) { $env:OCI_CLI_AUTH } else { $script:auth_method }
+    $providerAuth = switch ($selectedAuth.ToLowerInvariant().Replace('_', '')) {
+        'apikey' { 'APIKey' }
+        'securitytoken' { 'SecurityToken' }
+        'instanceprincipal' { 'InstancePrincipal' }
+        'resourceprincipal' { 'ResourcePrincipal' }
+        default { throw "Unsupported Terraform OCI authentication method: $selectedAuth" }
+    }
+    $lines = @('  auth = ' + (convert_to_hcl_string $providerAuth))
+    if ($providerAuth -in @('APIKey', 'SecurityToken')) {
+        $defaultConfig = Join-Path (Join-Path $_ociHome '.oci') 'config'
+        $configPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OCI_CONFIG_FILE)
+        $defaultConfigPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($defaultConfig)
+        if ($configPath -eq $defaultConfigPath) {
+            $lines += '  config_file_profile = ' + (convert_to_hcl_string $OCI_PROFILE)
+        }
+        elseif ($providerAuth -eq 'SecurityToken') {
+            throw "Terraform OCI SecurityToken authentication reads ~/.oci/config. Use that config path with OCI_PROFILE, or use API-key authentication for a custom OCI_CONFIG_FILE."
+        }
+        else {
+            # OCI Terraform does not support the CLI's custom config-file path.
+            # Read non-secret API-key fields explicitly without copying key data.
+            $attributes = [ordered]@{
+                tenancy_ocid = 'tenancy'
+                user_ocid = 'user'
+                fingerprint = 'fingerprint'
+                private_key_path = 'key_file'
+            }
+            foreach ($attribute in $attributes.GetEnumerator()) {
+                $value = read_oci_config_value $attribute.Value
+                if ([string]::IsNullOrWhiteSpace($value)) {
+                    throw "Missing OCI config value '$($attribute.Value)' in profile '$OCI_PROFILE' for Terraform API-key authentication."
+                }
+                if ($attribute.Key -eq 'private_key_path') {
+                    $value = $value.Replace('\', '/')
+                    $lines += '  private_key_path = pathexpand(' + (convert_to_hcl_string $value) + ')'
+                }
+                else {
+                    $lines += '  ' + $attribute.Key + ' = ' + (convert_to_hcl_string $value)
+                }
+            }
+        }
+    }
+    return ($lines -join "`n")
+}
+
 function create_terraform_provider {
     print_status "Creating provider.tf..."
+
+    $providerAuthConfig = get_terraform_auth_config
 
     # Configure terraform backend if requested (may create backend.tf)
     configure_terraform_backend
@@ -3269,7 +3334,7 @@ function create_terraform_provider {
 # Region: $script:region
 
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5"
   required_providers {
     oci = {
       source  = "oracle/oci"
@@ -3278,11 +3343,10 @@ terraform {
   }
 }
 
-# OCI Provider with session token authentication
+# OCI Provider using the same authentication as discovery
 provider "oci" {
-  auth                = "SecurityToken"
-  config_file_profile = "DEFAULT"
-  region              = "$script:region"
+$providerAuthConfig
+  region = $(convert_to_hcl_string $script:region)
 }
 "@
     Set-Content -Path 'provider.tf' -Value $providerContent
@@ -3613,9 +3677,9 @@ resource "oci_core_default_security_list" "main" {
     protocol = "1"
     source   = "0.0.0.0/0"
   }
-  # ICMP (IPv6)
+  # ICMPv6
   ingress_security_rules {
-    protocol = "1"
+    protocol = "58"
     source   = "::/0"
   }
 }
@@ -3873,13 +3937,17 @@ resource "oci_core_volume_attachment" "amd_block" {
 }
 
 # ARM Block Volumes
+locals {
+  arm_block_volume_indices = [for index, size in local.arm_block_volume_sizes : index if size > 0]
+}
+
 resource "oci_core_volume" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
+  count = local.arm_flex_instance_count > 0 ? length(local.arm_block_volume_indices) : 0
   
   compartment_id      = local.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
-  display_name        = "${local.arm_flex_hostnames[count.index]}-block"
-  size_in_gbs         = [for s in local.arm_block_volume_sizes : s if s > 0][count.index]
+  display_name        = "${local.arm_flex_hostnames[local.arm_block_volume_indices[count.index]]}-block"
+  size_in_gbs         = local.arm_block_volume_sizes[local.arm_block_volume_indices[count.index]]
   
   freeform_tags = {
     "Purpose" = "AlwaysFreeTier"
@@ -3889,10 +3957,10 @@ resource "oci_core_volume" "arm_block" {
 }
 
 resource "oci_core_volume_attachment" "arm_block" {
-  count = local.arm_flex_instance_count > 0 ? length([for s in local.arm_block_volume_sizes : s if s > 0]) : 0
+  count = local.arm_flex_instance_count > 0 ? length(local.arm_block_volume_indices) : 0
   
   attachment_type = "paravirtualized"
-  instance_id     = oci_core_instance.arm[count.index].id
+  instance_id     = oci_core_instance.arm[local.arm_block_volume_indices[count.index]].id
   volume_id       = oci_core_volume.arm_block[count.index].id
 }
 '@
@@ -4411,7 +4479,7 @@ function main {
                       elseif ($script:TUI_CONFIGURED) { 4 }
                       else { 1 }
 
-        Write-Host "  1) Deploy           plan + apply (auto-retries capacity errors)"
+        Write-Host "  1) Deploy           review plan + apply"
         Write-Host "  2) Plan only        preview changes without applying"
         Write-Host "  3) Edit config      change instance types, counts, sizes"
         Write-Host "  4) Regenerate       rebuild .tf files from current config"

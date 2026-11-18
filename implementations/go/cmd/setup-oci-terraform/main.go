@@ -1,20 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"time"
 
-	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
 	"github.com/oracle/oci-go-sdk/v65/identity"
 	"github.com/spf13/cobra"
@@ -24,12 +14,12 @@ import (
 const (
 	FreeTierMaxAMDInstances = 2
 	FreeTierAMDShape         = "VM.Standard.E2.1.Micro"
-	FreeTierMaxARMOCPUs      = 4
-	FreeTierMaxARMMemoryGB   = 24
+	FreeTierMaxARMOCPUs      = 2
+	FreeTierMaxARMMemoryGB   = 12
 	FreeTierARMShape         = "VM.Standard.A1.Flex"
 	FreeTierMaxStorageGB     = 200
 	FreeTierMinBootVolumeGB  = 47
-	FreeTierMaxARMInstances   = 4
+	FreeTierMaxARMInstances   = 2
 	FreeTierMaxVCNs           = 2
 
 	RetryMaxAttempts = 8
@@ -183,8 +173,8 @@ func main() {
 	rootCmd.Flags().StringVar(&app.Config.TFBackend, "tf-backend", "local", "Terraform backend (local|oci)")
 	rootCmd.Flags().StringVar(&app.Config.TFBackendBucket, "tf-backend-bucket", "", "Terraform backend bucket name")
 	rootCmd.Flags().BoolVar(&app.Config.TFBackendCreateBucket, "tf-backend-create-bucket", false, "Create backend bucket if missing")
-	rootCmd.Flags().StringVar(&app.Config.OCIConfigFile, "oci-config", "", "OCI config file path")
-	rootCmd.Flags().StringVar(&app.Config.OCIProfile, "oci-profile", "DEFAULT", "OCI profile name")
+	rootCmd.Flags().StringVar(&app.Config.OCIConfigFile, "oci-config", app.Config.OCIConfigFile, "OCI config file path")
+	rootCmd.Flags().StringVar(&app.Config.OCIProfile, "oci-profile", app.Config.OCIProfile, "OCI profile name")
 
 	// Environment variable support
 	if os.Getenv("NON_INTERACTIVE") == "true" {
@@ -259,7 +249,7 @@ func (app *App) run() error {
 	if err := app.initializeOCIClients(); err != nil {
 		// Will attempt to authenticate if this fails
 	}
-	
+
 	if err := app.setupOCIConfig(); err != nil {
 		return fmt.Errorf("OCI configuration failed: %w", err)
 	}
@@ -365,67 +355,3 @@ func printSubheader(title string) {
 	fmt.Printf("\033[1;36m── %s ──\033[0m\n", title)
 	fmt.Println()
 }
-
-// Placeholder implementations - these will be filled in subsequent files
-func (app *App) installPrerequisites() error {
-	printSubheader("Installing Prerequisites")
-	// Implementation will check for jq, curl, terraform, oci-cli
-	printSuccess("All prerequisites installed")
-	return nil
-}
-
-func (app *App) setupOCIConfig() error {
-	printSubheader("OCI Authentication")
-	// Implementation will handle OCI authentication
-	printSuccess("OCI authentication configured successfully")
-	return nil
-}
-
-func (app *App) fetchOCIConfigValues() error {
-	printSubheader("Fetching OCI Configuration")
-	// Implementation will read OCI config file
-	printSuccess("OCI configuration values fetched")
-	return nil
-}
-
-func (app *App) fetchAvailabilityDomains() error {
-	printStatus("Fetching availability domains...")
-	// Implementation will query OCI API
-	printSuccess("Availability domain: AD-1")
-	return nil
-}
-
-func (app *App) fetchUbuntuImages() error {
-	printStatus("Fetching Ubuntu images...")
-	// Implementation will query OCI API
-	printSuccess("Ubuntu images fetched")
-	return nil
-}
-
-func (app *App) generateSSHKeys() error {
-	printStatus("Setting up SSH keys...")
-	// Implementation will generate SSH keys
-	printSuccess("SSH key pair generated")
-	return nil
-}
-
-// inventoryAllResources is implemented in inventory.go
-
-func (app *App) promptConfiguration() error {
-	printHeader("INSTANCE CONFIGURATION")
-	// Implementation will prompt for configuration
-	printSuccess("Configuration complete")
-	return nil
-}
-
-func (app *App) loadExistingConfig() error {
-	// Implementation will load from variables.tf
-	return fmt.Errorf("no existing config")
-}
-
-func (app *App) configureFromExistingInstances() {
-	// Implementation will configure from existing instances
-}
-
-// createTerraformFiles is implemented in filegen.go
-// runTerraformWorkflow is implemented in terraform.go

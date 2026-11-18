@@ -35,7 +35,7 @@ func (app *App) installPrerequisites() error {
 	if len(missingCommands) > 0 {
 		printWarning(fmt.Sprintf("Missing commands: %s", strings.Join(missingCommands, ", ")))
 		printStatus("Please install missing commands before continuing")
-		// On Linux, we could try to install, but for cross-platform, just warn
+		return fmt.Errorf("missing prerequisites: %s", strings.Join(missingCommands, ", "))
 	}
 
 	printSuccess("All prerequisites installed")
@@ -65,9 +65,8 @@ func (app *App) generateSSHKeys() error {
 		printStatus("Using existing SSH key pair")
 		// Read public key
 		publicKeyData, err := os.ReadFile(publicKeyPath)
-		if err == nil {
-			app.OCIConfig.SSHPublicKey = strings.TrimSpace(string(publicKeyData))
-		}
+		if err != nil { return fmt.Errorf("failed to read existing public key: %w", err) }
+		app.OCIConfig.SSHPublicKey = strings.TrimSpace(string(publicKeyData))
 		return nil
 	}
 
@@ -131,6 +130,7 @@ func promptWithDefault(prompt, defaultValue string) string {
 
 // Prompt for integer in range
 func promptIntRange(prompt, defaultValue string, min, max int) (int, error) {
+    if min > max { return 0, fmt.Errorf("invalid range: %d-%d", min, max) }
 	for {
 		valueStr := promptWithDefault(prompt, defaultValue)
 		value, err := strconv.Atoi(valueStr)
@@ -148,12 +148,7 @@ func promptIntRange(prompt, defaultValue string, min, max int) (int, error) {
 
 // Confirm action
 func confirmAction(prompt string, defaultYes bool) bool {
-	defaultStr := "N"
-	if defaultYes {
-		defaultStr = "Y"
-	}
-
-	promptStr := "[y/N]"
+promptStr := "[y/N]"
 	if defaultYes {
 		promptStr = "[Y/n]"
 	}
@@ -209,4 +204,12 @@ func runCommandWithTimeout(cmd *exec.Cmd, timeoutSeconds int) ([]byte, error) {
 
 	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	return cmd.CombinedOutput()
+}
+
+// exec.Cmd cannot be started twice; retries need a fresh command each time.
+func runFreshCommand(original *exec.Cmd) error {
+	cmd := exec.Command(original.Path, original.Args[1:]...)
+	cmd.Dir, cmd.Env, cmd.Stdin = original.Dir, original.Env, original.Stdin
+	cmd.Stdout, cmd.Stderr = original.Stdout, original.Stderr
+	return cmd.Run()
 }

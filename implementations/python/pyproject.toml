@@ -27,10 +27,10 @@ dev = [
 ]
 
 [project.scripts]
-oci-terraform-setup = "oci_terraform_setup.cli:main"
+oci-terraform-setup = "setup_oci_terraform:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+py-modules = ["setup_oci_terraform"]
 
 [tool.black]
 line-length = 88

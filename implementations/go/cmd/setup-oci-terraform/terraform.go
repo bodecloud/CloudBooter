@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Run Terraform workflow
@@ -93,34 +94,30 @@ func (app *App) runTerraformWorkflow() error {
 
 // Apply Terraform plan with retry on Out of Capacity
 func (app *App) applyTerraformPlan() error {
-	printStatus("Applying Terraform plan...")
-
-	return retryWithBackoff(func() error {
-		cmd := exec.Command("terraform", "apply", "-input=false", "tfplan")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-
-		if err != nil {
-			// Check if it's an Out of Capacity error
-			// We'd need to capture stderr to check, but for now just retry
+	var lastErr error
+	for attempt := 1; attempt <= RetryMaxAttempts; attempt++ {
+		if attempt > 1 {
+			cmd := exec.Command("terraform", "plan", "-out=tfplan", "-input=false")
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil { return fmt.Errorf("failed to refresh plan: %w", err) }
+		}
+		output, err := exec.Command("terraform", "apply", "-input=false", "tfplan").CombinedOutput()
+		fmt.Print(string(output))
+		if err == nil {
+			os.Remove("tfplan")
+			cmd := exec.Command("terraform", "output", "-json")
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			return cmd.Run()
+		}
+		lastErr = err
+		message := strings.ToLower(string(output))
+		if !strings.Contains(message, "out of capacity") && !strings.Contains(message, "out of host capacity") && !strings.Contains(message, "outofcapacity") && !strings.Contains(message, "outofhostcapacity") {
 			return err
 		}
-
-		// Success - remove plan file
-		os.Remove("tfplan")
-
-		// Show outputs
-		fmt.Println()
-		printHeader("DEPLOYMENT COMPLETE")
-		cmd = exec.Command("terraform", "output", "-json")
-		output, _ := cmd.Output()
-		fmt.Println(string(output))
-
-		return nil
-	}, RetryMaxAttempts, RetryBaseDelay)
+		if attempt < RetryMaxAttempts { time.Sleep(time.Duration(RetryBaseDelay*(1<<(attempt-1)))*time.Second) }
+	}
+	return lastErr
 }
-
 // Import existing resources
 func (app *App) importExistingResources() error {
 	printHeader("IMPORTING EXISTING RESOURCES")
@@ -155,7 +152,7 @@ func (app *App) importExistingResources() error {
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				if err := retryWithBackoff(func() error {
-					return cmd.Run()
+					return runFreshCommand(cmd)
 				}, RetryMaxAttempts, RetryBaseDelay); err == nil {
 					printSuccess("  Imported successfully")
 					imported++
@@ -170,7 +167,8 @@ func (app *App) importExistingResources() error {
 
 	// Import AMD instances
 	amdIndex := 0
-	for instanceID, instance := range app.Resources.AMDInstances {
+	for _, instanceID := range sortedInstanceIDs(app.Resources.AMDInstances) {
+		instance := app.Resources.AMDInstances[instanceID]
 		if amdIndex >= app.InstanceConfig.AMDMicroInstanceCount {
 			break
 		}
@@ -186,7 +184,7 @@ func (app *App) importExistingResources() error {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := retryWithBackoff(func() error {
-				return cmd.Run()
+				return runFreshCommand(cmd)
 			}, RetryMaxAttempts, RetryBaseDelay); err == nil {
 				printSuccess("  Imported successfully")
 				imported++
@@ -201,7 +199,8 @@ func (app *App) importExistingResources() error {
 
 	// Import ARM instances
 	armIndex := 0
-	for instanceID, instance := range app.Resources.ARMInstances {
+	for _, instanceID := range sortedInstanceIDs(app.Resources.ARMInstances) {
+		instance := app.Resources.ARMInstances[instanceID]
 		if armIndex >= app.InstanceConfig.ARMFlexInstanceCount {
 			break
 		}
@@ -217,7 +216,7 @@ func (app *App) importExistingResources() error {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := retryWithBackoff(func() error {
-				return cmd.Run()
+				return runFreshCommand(cmd)
 			}, RetryMaxAttempts, RetryBaseDelay); err == nil {
 				printSuccess("  Imported successfully")
 				imported++

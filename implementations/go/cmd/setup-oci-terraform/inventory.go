@@ -84,7 +84,7 @@ func (app *App) inventoryComputeInstances() error {
 		}
 
 		var publicIP, privateIP string
-		vnicResp, err := app.VirtualNetworkClient.ListVnicAttachments(ctx, vnicReq)
+		vnicResp, err := app.ComputeClient.ListVnicAttachments(ctx, vnicReq)
 		if err == nil && len(vnicResp.Items) > 0 {
 			vnicID := *vnicResp.Items[0].VnicId
 			vnicGetReq := core.GetVnicRequest{VnicId: common.String(vnicID)}
